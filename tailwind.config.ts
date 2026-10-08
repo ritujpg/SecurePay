@@ -13,7 +13,25 @@ export default {
       },
     },
     extend: {
+      fontFamily: {
+        sans: ["DM Sans", "sans-serif"],
+        display: ["Manrope", "DM Sans", "sans-serif"],
+      },
       colors: {
+        secure: {
+          50: "hsl(146 52% 96%)",
+          100: "hsl(146 45% 91%)",
+          500: "hsl(155 55% 43%)",
+          600: "hsl(157 61% 35%)",
+          700: "hsl(158 62% 27%)",
+          900: "hsl(160 35% 13%)",
+        },
+        risk: {
+          low: "hsl(150 58% 39%)",
+          medium: "hsl(43 78% 46%)",
+          high: "hsl(25 78% 50%)",
+          critical: "hsl(2 62% 51%)",
+        },
         border: "hsl(var(--border))",
         input: "hsl(var(--input))",
         ring: "hsl(var(--ring))",
