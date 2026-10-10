@@ -1,6 +1,8 @@
-import { useCallback, useEffect, useMemo, useState, createContext, useContext } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, createContext, useContext } from "react";
 import { Link, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
-import { helpContent, passwordStrengthTranslations, supplementalTranslations, translateRiskFactor } from "./shared";
+import { cyberTrustTranslations, helpContent, passwordStrengthTranslations, presentationTranslations, supplementalTranslations, translateRiskFactor } from "./shared";
+import CyberTrustScore from "../components/CyberTrustScore";
+import PhishingCheck from "../components/PhishingCheck";
 import PasswordStrengthChecker from "../components/PasswordStrengthChecker";
 import {
   Activity, ArrowDownLeft, ArrowLeft, ArrowRight, ArrowUpRight, BadgeCheck, Banknote,
@@ -91,14 +93,24 @@ function calcRisk(draft: Draft, data: AppData) {
 function SecurePay() {
   const [data, setData] = useState<AppData>(readStore);
   const [toast, setToast] = useState("");
+  const [presentationMode, setPresentationMode] = useState(false);
   const [balanceAuthorized, setBalanceAuthorized] = useState(false);
   const [balanceShown, setBalanceShown] = useState(false);
   const navigate = useNavigate(); const location = useLocation();
   useEffect(() => { setData(v => v.user.balance === v.balance ? v : { ...v, user: { ...v.user, balance: v.balance } }); }, [data.balance]);
   useEffect(() => { localStorage.setItem(STORE_KEY, JSON.stringify(data)); document.documentElement.classList.toggle("dark", data.darkMode); }, [data]);
+  useEffect(() => {
+    const syncFromPreview = (storageEvent: StorageEvent) => {
+      if (storageEvent.key !== STORE_KEY) return;
+      const next = readStore();
+      setData(current => JSON.stringify(current) === JSON.stringify(next) ? current : next);
+    };
+    window.addEventListener("storage", syncFromPreview);
+    return () => window.removeEventListener("storage", syncFromPreview);
+  }, []);
   useEffect(() => { if (location.pathname !== "/balance") { setBalanceAuthorized(false); setBalanceShown(false); } }, [location.pathname]);
   useEffect(() => { if (!toast) return; const id = setTimeout(() => setToast(""), 3000); return () => clearTimeout(id); }, [toast]);
-  const t = useCallback((key: string) => translations[data.language]?.[key] ?? extraTranslations[data.language]?.[key] ?? supplementalTranslations[data.language]?.[key] ?? passwordStrengthTranslations[data.language]?.[key] ?? translations.en[key] ?? extraTranslations.en[key] ?? supplementalTranslations.en[key] ?? passwordStrengthTranslations.en[key] ?? key, [data.language]);
+  const t = useCallback((key: string) => translations[data.language]?.[key] ?? extraTranslations[data.language]?.[key] ?? supplementalTranslations[data.language]?.[key] ?? cyberTrustTranslations[data.language]?.[key] ?? passwordStrengthTranslations[data.language]?.[key] ?? presentationTranslations[data.language]?.[key] ?? translations.en[key] ?? extraTranslations.en[key] ?? supplementalTranslations.en[key] ?? cyberTrustTranslations.en[key] ?? passwordStrengthTranslations.en[key] ?? presentationTranslations.en[key] ?? key, [data.language]);
   const update = (patch: Partial<AppData>) => setData(v => ({ ...v, ...patch }));
   const unlockApp = () => { setData(v => ({ ...v, auth: { ...v.auth, isAuthenticated: true, lastMobile: v.loginMobile || v.auth.lastMobile }, loginMobile: "" })); navigate("/"); };
   const unlockBalance = () => { setBalanceAuthorized(true); setBalanceShown(true); navigate("/balance"); };
@@ -150,21 +162,57 @@ function SecurePay() {
     const conf = configs[kind]; beginDraft({ recipient: conf.recipient, amount: conf.amount, note: `Security demo — ${kind.toLowerCase()} risk`, type: "sent", signals: conf.signals });
   };
   const unread = data.notifications.filter(n => !n.read).length;
-  const context = { data, update, t, notify, event, beginDraft, continueVerification, completeTransaction, blockTransaction, simulateIncoming, markRead, startTest, toast, setToast, navigate, location, unread, unlockApp, unlockBalance, balanceAuthorized, balanceShown, setBalanceShown };
+  const context = { data, update, t, notify, event, beginDraft, continueVerification, completeTransaction, blockTransaction, simulateIncoming, markRead, startTest, toast, setToast, navigate, location, unread, unlockApp, unlockBalance, balanceAuthorized, balanceShown, setBalanceShown, presentationMode, setPresentationMode };
   return <AppContext.Provider value={context}><div className="secure-app min-h-screen bg-[#f5f7f6] text-slate-900 dark:bg-[#101815] dark:text-slate-100">
     <Routes>
       <Route path="/login" element={<Login />} /><Route path="/auth/otp" element={<AccessOtp />} /><Route path="/auth/unlock" element={data.auth.lastMobile ? <UnlockPage /> : <Navigate to="/login" replace />} /><Route path="/auth/pin" element={data.auth.lastMobile ? <AccessPin /> : <Navigate to="/login" replace />} /><Route path="/auth/fingerprint" element={data.auth.lastMobile ? <AccessFingerprint /> : <Navigate to="/login" replace />} />
       <Route path="*" element={data.auth.isAuthenticated ? <AppShell /> : <Navigate to="/login" replace />} />
     </Routes>
     {toast && <div className="toast-pop"><CheckCircle2 size={18} />{toast}</div>}
+    {presentationMode && <MobilePresentationPreview src={`${location.pathname}${location.search}`} t={t} onClose={() => setPresentationMode(false)} />}
   </div></AppContext.Provider>;
+}
+
+function MobilePresentationPreview({ src, t, onClose }: { src: string; t: (key: string) => string; onClose: () => void }) {
+  const [scale, setScale] = useState(1);
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    const updatePreview = () => {
+      if (window.innerWidth <= 760) {
+        onClose();
+        return;
+      }
+      const widthScale = (window.innerWidth - 48) / 406;
+      const heightScale = (window.innerHeight - 32) / 860;
+      setScale(Math.max(0.35, Math.min(1, widthScale, heightScale)));
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    updatePreview();
+    closeButtonRef.current?.focus();
+    window.addEventListener("resize", updatePreview);
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("resize", updatePreview);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [onClose]);
+
+  return <div className="mobile-presentation-overlay" role="dialog" aria-modal="true" aria-label={t("mobilePresentationTitle")}>
+    <button ref={closeButtonRef} type="button" className="mobile-presentation-close" aria-label={t("mobilePresentationClose")} onClick={onClose}><X size={19} /></button>
+    <div className="mobile-presentation-phone" style={{ transform: `scale(${scale})` }}>
+      <iframe src={src} title={t("mobilePresentationFrame")} />
+    </div>
+  </div>;
 }
 
 const navItems = [
   { path: "/", key: "home", icon: Home }, { path: "/scan", key: "scan", icon: QrCode }, { path: "/history", key: "history", icon: FileClock }, { path: "/security", key: "security", icon: ShieldCheck }, { path: "/profile", key: "profile", icon: UserRound },
 ];
 function AppShell() {
-  const { data, t, unread, balanceAuthorized } = useApp(); const location = useLocation(); const navigate = useNavigate();
+  const { data, t, unread, balanceAuthorized, presentationMode, setPresentationMode } = useApp(); const location = useLocation(); const navigate = useNavigate();
   const current = location.pathname;
   const isActive = (path: string) => path === "/" ? current === "/" : current === path || current.startsWith(path + "/");
   const title = current === "/" ? "SecurePay" : navItems.find(n => n.path !== "/" && isActive(n.path)) ? t(navItems.find(n => n.path !== "/" && isActive(n.path))!.key) : current.startsWith("/send") || current.startsWith("/recipient") || current.startsWith("/amount") || current.startsWith("/review") || current.startsWith("/request") ? t("send") : current === "/notifications" ? t("notifications") : "SecurePay";
@@ -172,7 +220,7 @@ function AppShell() {
   return <div className={`app-frame ${hideNav ? "flow-mode" : ""}`}>
     <aside className="desktop-sidebar"><div className="brand-lockup"><div className="brand-mark"><Shield size={21} /><span>₹</span></div><div><b>SecurePay</b><small>payments, protected</small></div></div><nav>{navItems.map(({ path, key, icon: Icon }) => <Link key={path} to={path} className={`side-link ${isActive(path) ? "active" : ""}`}><Icon size={19} /><span>{t(key)}</span>{key === "security" && <i className="live-dot" />}</Link>)}</nav><div className="sidebar-bottom"><div className="demo-pill"><span />{t("demo")}</div><div className="sidebar-disclaimer">Demo prototype · No real money involved</div></div></aside>
     <main className="app-main">
-      <header className="topbar"><button className="mobile-brand" onClick={() => navigate("/")}><span className="brand-mark small"><Shield size={17} /><span>₹</span></span><b>SecurePay</b></button><div className="desktop-page-title">{title}</div><div className="topbar-actions"><span className="header-demo">DEMO MODE</span><button aria-label={t("notifications")} className="icon-button notification-button" onClick={() => navigate("/notifications")}><Bell size={19} />{unread > 0 && <i>{unread}</i>}</button><button className="top-avatar" onClick={() => navigate("/profile")}>RR</button></div></header>
+      <header className="topbar"><button className="mobile-brand" onClick={() => navigate("/")}><span className="brand-mark small"><Shield size={17} /><span>₹</span></span><b>SecurePay</b></button><div className="desktop-page-title">{title}</div><div className="topbar-actions"><button type="button" className="mobile-presentation-toggle" aria-label={t("mobilePresentationMode")} aria-pressed={presentationMode} onClick={() => setPresentationMode(true)}><Smartphone size={16} /><span>{t("mobilePresentationMode")}</span></button><span className="header-demo">DEMO MODE</span><button aria-label={t("notifications")} className="icon-button notification-button" onClick={() => navigate("/notifications")}><Bell size={19} />{unread > 0 && <i>{unread}</i>}</button><button className="top-avatar" onClick={() => navigate("/profile")}>RR</button></div></header>
       <div className="page-content"><Routes>
         <Route path="/" element={<HomePage />} /><Route path="/scan" element={<ScanPage />} /><Route path="/send" element={<RecipientPage mode="sent" />} /><Route path="/request" element={<RecipientPage mode="request" />} /><Route path="/recipients" element={<ManageRecipients />} />
         <Route path="/amount" element={<AmountPage />} /><Route path="/review" element={<ReviewPage />} /><Route path="/request/review" element={<ReviewPage />} /><Route path="/risk" element={<RiskPage />} /><Route path="/pin" element={<PinPage />} /><Route path="/otp" element={<OtpPage />} /><Route path="/biometric" element={<BiometricPage />} />
@@ -343,8 +391,18 @@ function ScanPage() {
 }
 
 function SecurityPage() {
-  const { data, t, navigate, startTest } = useApp();
+  const { data, t, navigate, startTest, event, setToast } = useApp();
   const [passwordCheckerOpen, setPasswordCheckerOpen] = useState(false);
+  const [phishingCheckerOpen, setPhishingCheckerOpen] = useState(false);
+  const cyberTrustSignals = {
+    securityEnabled: data.settings.security,
+    biometricsEnabled: data.settings.biometric,
+    transactionAlertsEnabled: data.settings.transactionAlerts,
+    sessionAuthenticated: data.auth.isAuthenticated,
+    loginMobileRecognized: Boolean(data.auth.lastMobile && data.auth.knownMobiles.includes(data.auth.lastMobile)),
+    pinFailures: data.pinFailures,
+    lockedUntil: data.lockedUntil,
+  };
   const protections = [
     { icon: <Activity />, title: t("riskDetection"), state: t("active"), info: t("paymentScored") },
     { icon: <LockKeyhole />, title: t("adaptiveVerification"), state: t("active"), info: t("verificationScaled") },
@@ -354,12 +412,18 @@ function SecurityPage() {
 
   return <div>
     <div className="security-header"><div><span className="eyebrow">SECUREPAY PROTECTION</span><h1>{t("securityCenter")}</h1><p>{t("protected")}</p></div><div className="security-status-icon"><ShieldCheck size={30} /></div></div>
-    <section className="security-score-card"><div className="security-score-copy"><span className="status-pill"><i />{t("systemsActive")}</span><h2>{t("securityExcellent")}</h2><p>{t("securityDemoDescription")}</p><button onClick={() => navigate("/security/activity")}>{t("viewSecurityActivity")}<ArrowRight size={15} /></button></div><div className="security-score-ring"><span>94</span><small>/100</small></div></section>
+    <CyberTrustScore signals={cyberTrustSignals} t={t} onViewActivity={() => navigate("/security/activity")} />
     <div className="protection-grid">{protections.map(c => <div className="protection-card" key={c.title}><div className="protection-card-top"><span>{c.icon}</span><i /></div><b>{c.title}</b><small>{c.info}</small><span className="protection-active">{c.state}</span></div>)}</div>
-    <section className="password-checker-section">
-      {!passwordCheckerOpen && <Button variant="outline" onClick={() => setPasswordCheckerOpen(true)}><LockKeyhole size={17} />{t("passwordCheckerOpen")}</Button>}
-      {passwordCheckerOpen && <PasswordStrengthChecker t={t} onClose={() => setPasswordCheckerOpen(false)} />}
-    </section>
+    <div className="security-tools-row">
+      <section className="password-checker-section">
+        {!passwordCheckerOpen && <Button variant="outline" onClick={() => setPasswordCheckerOpen(true)}><LockKeyhole size={17} />{t("passwordCheckerOpen")}</Button>}
+        {passwordCheckerOpen && <PasswordStrengthChecker t={t} onClose={() => setPasswordCheckerOpen(false)} />}
+      </section>
+      <section className="phishing-checker-section">
+        {!phishingCheckerOpen && <Button variant="outline" onClick={() => setPhishingCheckerOpen(true)}><ShieldAlert size={17} />{t("phishingTitle")}</Button>}
+        {phishingCheckerOpen && <PhishingCheck t={t} onClose={() => setPhishingCheckerOpen(false)} onIgnore={level => { const at = new Date().toISOString(); const category = t(`phishingResult${level[0].toUpperCase()}${level.slice(1)}`); event("Phishing warning ignored", `${category} warning ignored at ${at}.`); setToast(t("phishingIgnoreConfirmation")); }} />}
+      </section>
+    </div>
     <section className="security-events-section"><SectionHeading title={t("recentEvents")} action={t("fullActivity")} onClick={() => navigate("/security/activity")} /><div className="security-event-list">{data.events.slice(0, 5).map((ev: SecurityEvent) => <button key={ev.id} className="security-event-row" onClick={() => ev.transactionId ? navigate(`/transaction/${ev.transactionId}`) : navigate("/security/activity")}><span><ShieldCheck size={16} /></span><div><b>{ev.type}</b><small>{ev.description}</small></div><time>{relativeTime(ev.timestamp)}</time></button>)}</div></section>
     <section className="demo-controls-inline"><div><Sparkles size={17} /><div><b>{t("riskEngineTitle")}</b><small>{t("riskScenarioDescription")}</small></div></div><Button variant="outline" onClick={() => navigate("/settings")}>{t("openSettings")}<ArrowRight size={15} /></Button></section>
     <DemoDisclaimer />

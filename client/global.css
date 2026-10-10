@@ -270,3 +270,102 @@ h1, h2, h3, h4, b, strong { font-family: "Manrope", "DM Sans", sans-serif; }
 .dark .password-checker-result { border-color: #35463b; }
 .dark .password-strength-meter span { border-color: #64746a; background: #26332b; }
 @media (max-width: 480px) { .password-checker { padding: 14px; }.password-checker-heading h2 { font-size: 16px; }.password-checker-actions { flex-direction: column; }.password-checker-actions button { width: 100%; } }
+.cyber-trust-card { display: block; }
+.cyber-trust-summary { display: flex; align-items: center; justify-content: space-between; gap: 20px; }
+.cyber-trust-copy { flex: 1; min-width: 0; }
+.cyber-trust-copy h2 { margin: 8px 0 5px; }
+.cyber-trust-copy > p:not(.cyber-trust-limit) { max-width: 440px; margin: 4px 0 0; color: #53665a; font-size: 14px; line-height: 1.5; }
+.cyber-trust-copy > .cyber-trust-details-toggle { margin-top: 3px; font-size: 13px; }
+.cyber-trust-copy > p:not(.cyber-trust-limit) { max-width: 440px; margin: 4px 0 0; color: #53665a; font-size: 14px; line-height: 1.5; }
+.cyber-trust-copy > .cyber-trust-details-toggle { margin-top: 3px; font-size: 13px; }
+.cyber-trust-copy h3 { margin: 12px 0 5px; color: #34483a; font-size: 13px; }
+.cyber-trust-factors { display: grid; gap: 7px; margin: 0; padding: 0; list-style: none; }
+.cyber-trust-factors li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 3px 10px; color: #3e5145; font-size: 12px; }
+.cyber-trust-factors li small { grid-column: 1 / -1; color: #755a1d; font-size: 11px; line-height: 1.45; }
+.cyber-factor-good { color: #246c49; font-weight: 700; }
+.cyber-factor-attention { color: #885d13; font-weight: 700; }
+.cyber-trust-limit { margin: 12px 0 0 !important; color: #5c6c61 !important; font-size: 12px !important; }
+.cyber-trust-score-display { display: grid; flex: none; justify-items: center; gap: 8px; }
+.cyber-trust-score-display .security-score-ring { width: 78px; height: 78px; }
+.cyber-trust-score-display .security-score-ring span { font-size: 21px; }
+.cyber-trust-score-display .security-score-ring small { margin-top: -12px; font-size: 9px; }
+.cyber-trust-score-display > strong { max-width: 130px; color: #246c49; text-align: center; font-size: 13px; }
+.cyber-trust-score-display .security-score-ring { position: relative; isolation: isolate; border: 0; background: conic-gradient(#46bc82 0deg var(--cyber-trust-angle, 0deg), #d6f0e1 var(--cyber-trust-angle, 0deg) 360deg); transform: none; }
+.cyber-trust-score-display .security-score-ring[data-score="100"] { background: #46bc82; }
+.cyber-trust-score-display .security-score-ring::before { position: absolute; z-index: 0; inset: 6px; border-radius: 50%; background: #fff; content: ""; }
+.cyber-trust-score-display .security-score-ring > span, .cyber-trust-score-display .security-score-ring > small { position: relative; z-index: 1; }
+.cyber-trust-details-toggle { display: inline-flex; align-items: center; min-height: 42px; margin-top: 3px; padding: 0 2px; color: #16845b; border: 0; background: transparent; font: inherit; font-size: 13px; font-weight: 700; cursor: pointer; }
+.cyber-trust-details-toggle:focus-visible { outline: 3px solid #378e6755; outline-offset: 2px; }
+.cyber-trust-details[hidden] { display: none; }
+.cyber-trust-details:not([hidden]) { margin-top: 13px; padding-top: 12px; border-top: 1px solid #e3ece6; }
+.cyber-trust-activity-link { display: inline-flex; align-items: center; gap: 5px; margin-top: 11px; padding: 0; color: #16845b; border: 0; background: transparent; font-size: 12px; font-weight: 700; cursor: pointer; }
+.cyber-trust-activity-link:focus-visible { outline: 3px solid #378e6755; outline-offset: 3px; }
+.phishing-checker-section { margin: 0 0 22px; }
+.security-tools-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; gap: 14px; margin: 0 0 22px; }
+.security-tools-row > .password-checker-section, .security-tools-row > .phishing-checker-section { min-width: 0; margin: 0; }
+.security-tools-row > section > .btn { width: 100%; min-height: 56px; display: flex; align-items: center; justify-content: center; gap: 10px; padding: 10px 14px; text-align: center; white-space: normal; line-height: 1.35; font-size: 13px; }
+.security-tools-row > section > .btn svg { flex: none; }
+.phishing-checker { margin-top: 12px; padding: 18px; color: #304137; border: 1px solid #dfe9e2; border-radius: 14px; background: #fff; }
+.phishing-checker-heading { display: flex; align-items: flex-start; gap: 11px; }
+.phishing-checker-icon { width: 36px; height: 36px; flex: none; display: grid; place-items: center; color: #1d7752; border-radius: 10px; background: #eaf6ee; }
+.phishing-checker-heading > div { flex: 1; min-width: 0; }
+.phishing-checker-heading h2 { margin: 0; color: #293c30; font-size: 17px; }
+.phishing-checker-heading p { margin: 5px 0 0; color: #506257; font-size: 13px; line-height: 1.5; }
+.phishing-checker-icon-button { width: 44px; height: 44px; flex: none; display: grid; place-items: center; color: #43554a; border: 1px solid #dbe5de; border-radius: 9px; background: #fff; cursor: pointer; }
+.phishing-checker-icon-button:focus-visible, .phishing-checker textarea:focus-visible { outline: 3px solid #378e6755; outline-offset: 2px; }
+.phishing-mode-choice { display: flex; gap: 5px; margin-top: 16px; padding: 4px; border: 1px solid #dce7df; border-radius: 10px; background: #f3f8f5; }
+.phishing-mode-choice button { flex: 1; min-height: 44px; padding: 7px 10px; color: #43584a; border: 1px solid transparent; border-radius: 7px; background: transparent; font: inherit; font-size: 13px; font-weight: 700; cursor: pointer; }
+.phishing-mode-choice button.selected { color: #145d3e; border-color: #bfd9c8; background: #fff; }
+.phishing-checker-label { display: block; margin-top: 15px; color: #34473a; font-size: 14px; font-weight: 700; }
+.phishing-checker textarea { width: 100%; min-height: 112px; margin-top: 7px; padding: 11px 12px; resize: vertical; color: #24372b; border: 1px solid #cbd9cf; border-radius: 9px; background: #fff; font: inherit; font-size: 16px; line-height: 1.5; }
+.phishing-checker textarea::placeholder { color: #64746a; opacity: 1; }
+.phishing-checker-privacy { margin: 9px 0 0; color: #4f6256; font-size: 12px; line-height: 1.55; }
+.phishing-checker-error { margin: 8px 0 0; color: #a12e2e; font-size: 14px; font-weight: 700; }
+.phishing-checker-actions { display: flex; flex-wrap: wrap; gap: 9px; margin-top: 13px; }
+.phishing-checker-actions button { min-height: 44px; font-size: 13px; }
+.phishing-checker-result { margin-top: 16px; padding: 14px; color: #304137; border: 1px solid #cbd9cf; border-radius: 10px; background: #f7faf8; }
+.phishing-result-title { display: flex; align-items: center; gap: 8px; }
+.phishing-result-title h3 { margin: 0; color: #244532; font-size: 17px; }
+.phishing-result-suspicious .phishing-result-title { color: #77560d; }
+.phishing-result-suspicious .phishing-result-title h3 { color: #77560d; }
+.phishing-result-highRisk .phishing-result-title { color: #9b342e; }
+.phishing-result-highRisk .phishing-result-title h3 { color: #9b342e; }
+.phishing-rule-score { margin: 6px 0 0; color: #4f6256; font-size: 12px; }
+.phishing-checker-result h4 { margin: 13px 0 5px; color: #34483a; font-size: 14px; }
+.phishing-checker-result > p:last-child { margin: 0; color: #3e5145; font-size: 13px; line-height: 1.55; }
+.phishing-checker-result ul { display: grid; gap: 10px; margin: 0; padding-left: 20px; color: #3e5145; font-size: 13px; line-height: 1.5; }
+.phishing-checker-result li strong, .phishing-checker-result li span { display: block; }
+.phishing-checker-result li strong { margin-bottom: 2px; color: #34483a; }
+.dark .cyber-trust-copy h3, .dark .cyber-trust-factors li, .dark .cyber-trust-limit { color: #d5e2d9 !important; }
+.dark .cyber-trust-copy h2 { color: #e5eee8; }
+.dark .cyber-trust-copy > p:not(.cyber-trust-limit) { color: #bdcbc1; }
+.dark .cyber-trust-details-toggle { color: #83d3a2; }
+.dark .cyber-factor-good { color: #83d3a2; }
+.dark .cyber-factor-attention, .dark .cyber-trust-factors li small { color: #f1cf79 !important; }
+.dark .cyber-trust-score-display > strong { color: #83d3a2; }
+.dark .cyber-trust-score-display .security-score-ring::before { background: #17211c; }
+.dark .cyber-trust-details:not([hidden]) { border-color: #35463b; }
+.dark .phishing-checker { color: #e4eee7; border-color: #35463b; background: #17211c; }
+.dark .phishing-checker-heading h2, .dark .phishing-checker-result h4, .dark .phishing-checker-result li strong { color: #e4eee7; }
+.dark .phishing-checker-heading p, .dark .phishing-checker-privacy, .dark .phishing-rule-score, .dark .phishing-checker-result li, .dark .phishing-checker-result > p:last-child { color: #bdcbc1; }
+.dark .phishing-checker-icon-button, .dark .phishing-checker textarea { color: #e5eee8; border-color: #46584b; background: #101815; }
+.dark .phishing-checker textarea::placeholder { color: #aab9ae; }
+.dark .phishing-mode-choice { border-color: #394b3f; background: #101815; }
+.dark .phishing-mode-choice button { color: #c3d1c8; }
+.dark .phishing-mode-choice button.selected { color: #e2f0e6; border-color: #4a7258; background: #26382c; }
+.dark .phishing-checker-result { color: #e4eee7; border-color: #46584b; background: #1c2a21; }
+.dark .phishing-result-title h3 { color: #9be0b4; }
+.dark .phishing-result-suspicious .phishing-result-title h3 { color: #f1cf79; }
+.dark .phishing-result-highRisk .phishing-result-title h3 { color: #ffaaa2; }
+@media (max-width: 540px) { .security-tools-row { grid-template-columns: 1fr; gap: 10px; }.cyber-trust-summary { align-items: stretch; flex-direction: column; gap: 10px; }.cyber-trust-score-display { align-self: flex-start; grid-template-columns: auto auto; align-items: center; gap: 10px; }.cyber-trust-score-display .security-score-ring { width: 65px; height: 65px; }.cyber-trust-score-display .security-score-ring span { font-size: 18px; }.cyber-trust-score-display > strong { max-width: 120px; font-size: 12px; }.phishing-checker { padding: 14px; }.phishing-checker-actions { flex-direction: column; }.phishing-checker-actions button { width: 100%; } }
+.mobile-presentation-toggle { min-height: 36px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; padding: 0 11px; color: #276447; border: 1px solid #cfe5d7; border-radius: 9px; background: #f3faf5; font: inherit; font-size: 11px; font-weight: 700; white-space: nowrap; cursor: pointer; }
+.mobile-presentation-toggle:hover { background: #e8f5ec; }
+.mobile-presentation-toggle:focus-visible, .mobile-presentation-close:focus-visible { outline: 3px solid #73d49a; outline-offset: 3px; }
+.mobile-presentation-overlay { position: fixed; z-index: 200; inset: 0; display: grid; place-items: center; overflow: hidden; padding: 16px 24px; background: #08130de8; backdrop-filter: blur(5px); }
+.mobile-presentation-phone { width: 406px; height: 860px; box-sizing: border-box; overflow: hidden; border: 8px solid #21382b; border-radius: 38px; background: #101815; box-shadow: 0 28px 90px #0008; transform-origin: center; }
+.mobile-presentation-phone iframe { width: 100%; height: 100%; display: block; border: 0; background: #f5f7f6; }
+.mobile-presentation-close { position: fixed; z-index: 1; top: 17px; right: 18px; width: 46px; height: 46px; display: grid; place-items: center; color: #e7f0ea; border: 1px solid #ffffff44; border-radius: 12px; background: #1b3025; cursor: pointer; }
+.mobile-presentation-close:hover { background: #284535; }
+.dark .mobile-presentation-toggle { color: #d4eadb; border-color: #3a5945; background: #1b2d22; }
+.dark .mobile-presentation-toggle:hover { background: #263c2e; }
+@media (max-width: 760px) { .mobile-presentation-toggle { display: none; }.mobile-presentation-overlay { display: none; } }
