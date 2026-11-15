@@ -1,4 +1,3 @@
-
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import joblib
@@ -43,6 +42,18 @@ if_feature_names = if_model_data["feature_names"]
 
 
 # ==========================================
+# LOAD BANKING SMS DETECTOR
+# ==========================================
+
+SMS_MODEL_PATH = os.path.join(
+    MODELS_DIR,
+    "banking_sms_detector.pkl"
+)
+
+sms_model = joblib.load(SMS_MODEL_PATH)
+
+
+# ==========================================
 # HOME ROUTE
 # ==========================================
 
@@ -50,7 +61,11 @@ if_feature_names = if_model_data["feature_names"]
 def home():
     return jsonify({
         "message": "SecurePay ML API is running!",
-        "models": ["Random Forest", "Isolation Forest"]
+        "models": [
+            "Random Forest",
+            "Isolation Forest",
+            "Banking SMS Detector"
+        ]
     })
 
 
@@ -126,15 +141,12 @@ def predict_isolation():
             pd.to_numeric, errors="raise"
         )
 
-        # Apply the scaler used during training
         scaled_input = if_scaler.transform(input_df)
 
-        # Isolation Forest: -1 = anomaly, 1 = normal
         raw_prediction = int(
             if_model.predict(scaled_input)[0]
         )
 
-        # Convert to SecurePay's common prediction format
         prediction = 1 if raw_prediction == -1 else 0
 
         return jsonify({
@@ -149,8 +161,59 @@ def predict_isolation():
 
 
 # ==========================================
+# BANKING SMS PREDICTION
+# ==========================================
+
+@app.route("/predict-sms", methods=["POST"])
+def predict_sms():
+    try:
+        data = request.get_json(silent=True)
+
+        if not isinstance(data, dict):
+            return jsonify({"error": "Invalid input data"}), 400
+
+        message = data.get("message")
+
+        if not isinstance(message, str) or not message.strip():
+            return jsonify({
+                "error": "Please provide a valid SMS message"
+            }), 400
+
+        # Predict SMS category
+        prediction = str(sms_model.predict([message])[0])
+
+        # Get probability for each class
+        probabilities = sms_model.predict_proba([message])[0]
+
+        class_probabilities = {
+            str(label): round(float(probability) * 100, 2)
+            for label, probability in zip(
+                sms_model.classes_,
+                probabilities
+            )
+        }
+
+        confidence = class_probabilities[prediction]
+
+        return jsonify({
+            "model": "Banking SMS Detector",
+            "message": message,
+            "prediction": prediction,
+            "confidence": confidence,
+            "probabilities": class_probabilities
+        })
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ==========================================
 # RUN FLASK SERVER
 # ==========================================
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5001, debug=True)
+    app.run(
+        host="0.0.0.0",
+        port=5001,
+        debug=True
+    )
