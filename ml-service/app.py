@@ -3,11 +3,35 @@ from flask_cors import CORS
 import joblib
 import pandas as pd
 import os
+import re
 
 app = Flask(__name__)
 CORS(app)
 
 MODELS_DIR = os.path.join(os.path.dirname(__file__), "models")
+
+
+# ==========================================
+# TEXT PREPROCESSING
+# ==========================================
+
+def clean_text(text):
+    text = str(text).lower()
+
+    # Remove HTML tags
+    text = re.sub(r'<[^>]+>', ' ', text)
+
+    # Replace URLs with a common token
+    text = re.sub(
+        r'https?://\S+|www\.\S+',
+        ' URLTOKEN ',
+        text
+    )
+
+    # Remove extra whitespace
+    text = re.sub(r'\s+', ' ', text)
+
+    return text.strip()
 
 
 # ==========================================
@@ -20,7 +44,6 @@ RF_MODEL_PATH = os.path.join(
 )
 
 rf_model_data = joblib.load(RF_MODEL_PATH)
-
 rf_model = rf_model_data["model"]
 rf_feature_names = rf_model_data["feature_names"]
 
@@ -35,14 +58,13 @@ IF_MODEL_PATH = os.path.join(
 )
 
 if_model_data = joblib.load(IF_MODEL_PATH)
-
 if_model = if_model_data["model"]
 if_scaler = if_model_data["scaler"]
 if_feature_names = if_model_data["feature_names"]
 
 
 # ==========================================
-# LOAD BANKING SMS DETECTOR
+# LOAD BANKING SMS MODEL
 # ==========================================
 
 SMS_MODEL_PATH = os.path.join(
@@ -51,6 +73,35 @@ SMS_MODEL_PATH = os.path.join(
 )
 
 sms_model = joblib.load(SMS_MODEL_PATH)
+
+
+# ==========================================
+# LOAD PHISHING DETECTOR
+# ==========================================
+
+PHISHING_MODEL_PATH = os.path.join(
+    MODELS_DIR,
+    "phishing_detector.pkl"
+)
+
+phishing_model = joblib.load(PHISHING_MODEL_PATH)
+
+# ==========================================
+# LOAD XGBOOST TRANSACTION RISK MODEL
+# ==========================================
+
+XGBOOST_MODEL_PATH = os.path.join(
+    MODELS_DIR,
+    "transaction_risk_xgboost.pkl"
+)
+
+XGBOOST_FEATURES_PATH = os.path.join(
+    MODELS_DIR,
+    "transaction_features.pkl"
+)
+
+xgboost_model = joblib.load(XGBOOST_MODEL_PATH)
+xgboost_feature_names = joblib.load(XGBOOST_FEATURES_PATH)
 
 
 # ==========================================
@@ -64,7 +115,9 @@ def home():
         "models": [
             "Random Forest",
             "Isolation Forest",
-            "Banking SMS Detector"
+            "Banking SMS Detector",
+            "Phishing Detector",
+             "XGBoost Transaction Risk"
         ]
     })
 
@@ -179,11 +232,15 @@ def predict_sms():
                 "error": "Please provide a valid SMS message"
             }), 400
 
-        # Predict SMS category
-        prediction = str(sms_model.predict([message])[0])
+        cleaned_message = clean_text(message)
 
-        # Get probability for each class
-        probabilities = sms_model.predict_proba([message])[0]
+        prediction = str(
+            sms_model.predict([cleaned_message])[0]
+        )
+
+        probabilities = sms_model.predict_proba(
+            [cleaned_message]
+        )[0]
 
         class_probabilities = {
             str(label): round(float(probability) * 100, 2)
@@ -193,13 +250,20 @@ def predict_sms():
             )
         }
 
-        confidence = class_probabilities[prediction]
+        phishing_probability = class_probabilities["Phishing"]
+
+        if phishing_probability >= 70:
+            risk_level = "Phishing"
+        elif phishing_probability >= 35:
+            risk_level = "Suspicious"
+        else:
+            risk_level = "Safe"
 
         return jsonify({
             "model": "Banking SMS Detector",
-            "message": message,
             "prediction": prediction,
-            "confidence": confidence,
+            "risk_level": risk_level,
+            "phishing_risk_score": phishing_probability,
             "probabilities": class_probabilities
         })
 
@@ -207,6 +271,116 @@ def predict_sms():
         return jsonify({"error": str(e)}), 500
 
 
+# ==========================================
+# PHISHING EMAIL / MESSAGE PREDICTION
+# ==========================================
+
+@app.route("/predict-phishing", methods=["POST"])
+def predict_phishing():
+    try:
+        data = request.get_json(silent=True)
+
+        if not isinstance(data, dict):
+            return jsonify({"error": "Invalid input data"}), 400
+
+        message = data.get("message")
+
+        if not isinstance(message, str) or not message.strip():
+            return jsonify({
+                "error": "Please provide valid email or message text"
+            }), 400
+
+        cleaned_message = clean_text(message)
+
+        prediction = str(
+            phishing_model.predict([cleaned_message])[0]
+        )
+
+        probabilities = phishing_model.predict_proba(
+            [cleaned_message]
+        )[0]
+
+        class_probabilities = {
+            str(label): round(float(probability) * 100, 2)
+            for label, probability in zip(
+                phishing_model.classes_,
+                probabilities
+            )
+        }
+
+        phishing_probability = class_probabilities["Phishing"]
+
+        if phishing_probability >= 70:
+            risk_level = "Phishing"
+        elif phishing_probability >= 35:
+            risk_level = "Suspicious"
+        else:
+            risk_level = "Safe"
+
+        return jsonify({
+            "model": "Phishing Detector",
+            "prediction": prediction,
+            "risk_level": risk_level,
+            "phishing_risk_score": phishing_probability,
+            "probabilities": class_probabilities
+        })
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+# ==========================================
+# XGBOOST TRANSACTION RISK PREDICTION
+# ==========================================
+
+@app.route("/predict-xgboost", methods=["POST"])
+def predict_xgboost():
+    try:
+        data = request.get_json()
+
+        if not isinstance(data, dict):
+            return jsonify({"error": "JSON input is required"}), 400
+
+        missing_features = [
+            feature for feature in xgboost_feature_names
+            if feature not in data
+        ]
+
+        if missing_features:
+            return jsonify({
+                "error": "Missing required features",
+                "missing_features": missing_features
+            }), 400
+
+        input_df = pd.DataFrame(
+            [[data[feature] for feature in xgboost_feature_names]],
+            columns=xgboost_feature_names
+        )
+
+        input_df = input_df.apply(pd.to_numeric, errors="raise")
+
+        prediction = int(xgboost_model.predict(input_df)[0])
+        probabilities = xgboost_model.predict_proba(input_df)[0]
+
+        fraud_index = list(xgboost_model.classes_).index(1)
+        legitimate_index = list(xgboost_model.classes_).index(0)
+
+        return jsonify({
+            "model": "XGBoost Transaction Risk",
+            "prediction": prediction,
+            "result": "Fraudulent" if prediction == 1 else "Legitimate",
+            "fraud_probability": round(
+                float(probabilities[fraud_index]) * 100, 2
+            ),
+            "legitimate_probability": round(
+                float(probabilities[legitimate_index]) * 100, 2
+            )
+        })
+
+    except (ValueError, TypeError) as e:
+        return jsonify({"error": str(e)}), 400
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 # ==========================================
 # RUN FLASK SERVER
 # ==========================================
