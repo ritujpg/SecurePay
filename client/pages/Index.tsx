@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, createContext, useContext } from "react";
 import { Link, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
-import { cyberTrustTranslations, helpContent, passwordStrengthTranslations, presentationTranslations, supplementalTranslations, translateRiskFactor } from "./shared";
+import { cyberTrustTranslations, helpContent, mlTranslations, passwordStrengthTranslations, presentationTranslations, supplementalTranslations, translateRiskFactor } from "./shared";
 import CyberTrustScore from "../components/CyberTrustScore";
 import PhishingCheck from "../components/PhishingCheck";
 import PasswordStrengthChecker from "../components/PasswordStrengthChecker";
@@ -110,7 +110,7 @@ function SecurePay() {
   }, []);
   useEffect(() => { if (location.pathname !== "/balance") { setBalanceAuthorized(false); setBalanceShown(false); } }, [location.pathname]);
   useEffect(() => { if (!toast) return; const id = setTimeout(() => setToast(""), 3000); return () => clearTimeout(id); }, [toast]);
-  const t = useCallback((key: string) => translations[data.language]?.[key] ?? extraTranslations[data.language]?.[key] ?? supplementalTranslations[data.language]?.[key] ?? cyberTrustTranslations[data.language]?.[key] ?? passwordStrengthTranslations[data.language]?.[key] ?? presentationTranslations[data.language]?.[key] ?? translations.en[key] ?? extraTranslations.en[key] ?? supplementalTranslations.en[key] ?? cyberTrustTranslations.en[key] ?? passwordStrengthTranslations.en[key] ?? presentationTranslations.en[key] ?? key, [data.language]);
+  const t = useCallback((key: string) => translations[data.language]?.[key] ?? extraTranslations[data.language]?.[key] ?? mlTranslations[data.language]?.[key] ?? supplementalTranslations[data.language]?.[key] ?? cyberTrustTranslations[data.language]?.[key] ?? passwordStrengthTranslations[data.language]?.[key] ?? presentationTranslations[data.language]?.[key] ?? translations.en[key] ?? extraTranslations.en[key] ?? mlTranslations.en[key] ?? supplementalTranslations.en[key] ?? cyberTrustTranslations.en[key] ?? passwordStrengthTranslations.en[key] ?? presentationTranslations.en[key] ?? key, [data.language]);
   const update = (patch: Partial<AppData>) => setData(v => ({ ...v, ...patch }));
   const unlockApp = () => { setData(v => ({ ...v, auth: { ...v.auth, isAuthenticated: true, lastMobile: v.loginMobile || v.auth.lastMobile }, loginMobile: "" })); navigate("/"); };
   const unlockBalance = () => { setBalanceAuthorized(true); setBalanceShown(true); navigate("/balance"); };

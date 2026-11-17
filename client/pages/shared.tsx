@@ -578,3 +578,54 @@ export function SettingToggle({ icon, title, description, enabled, onClick }: an
 }
 
 export function AtIcon() { return <span className="at-symbol">@</span>; }
+
+export const mlTranslations: Record<Language, Record<string, string>> = {
+  en: {
+    phishingRemotePrivacy: "Message text is sent to SecurePay's ML service for analysis. Do not enter your PIN, OTP, password, or sensitive account details. Links are never opened, and model results cannot guarantee safety.",
+    phishingChecking: "Checking with the phishing model…",
+    phishingModelResult: "Phishing Detector result",
+    phishingModelPrediction: "Prediction",
+    phishingModelRiskLevel: "Model risk level",
+    phishingModelRiskScore: "Phishing risk score",
+    phishingModelProbabilities: "Class probabilities",
+    phishingRequestFailed: "The phishing model could not check this message.",
+    smsModelResult: "Banking SMS Detector result",
+    smsRequestFailed: "The Banking SMS Detector could not check this message.",
+  },
+  hi: {
+    phishingRemotePrivacy: "संदेश का विश्लेषण SecurePay की ML सेवा में किया जाता है। अपना PIN, OTP, पासवर्ड या संवेदनशील खाता विवरण न डालें। लिंक नहीं खोले जाते और मॉडल का परिणाम सुरक्षा की गारंटी नहीं देता।",
+    phishingChecking: "फ़िशिंग मॉडल से जाँच हो रही है…",
+    phishingModelResult: "फ़िशिंग डिटेक्टर का परिणाम",
+    phishingModelPrediction: "अनुमान",
+    phishingModelRiskLevel: "मॉडल जोखिम स्तर",
+    phishingModelRiskScore: "फ़िशिंग जोखिम स्कोर",
+    phishingModelProbabilities: "श्रेणी की संभावनाएँ",
+    phishingRequestFailed: "फ़िशिंग मॉडल इस संदेश की जाँच नहीं कर सका।",
+    smsModelResult: "बैंकिंग SMS डिटेक्टर का परिणाम",
+    smsRequestFailed: "बैंकिंग SMS डिटेक्टर इस संदेश की जाँच नहीं कर सका।",
+  },
+  mr: {
+    phishingRemotePrivacy: "संदेशाचे विश्लेषण SecurePay च्या ML सेवेमध्ये केले जाते. तुमचा PIN, OTP, पासवर्ड किंवा संवेदनशील खाते तपशील टाकू नका. लिंक उघडल्या जात नाहीत आणि मॉडेलचा निकाल सुरक्षिततेची हमी देत नाही.",
+    phishingChecking: "फिशिंग मॉडेलद्वारे तपासणी सुरू आहे…",
+    phishingModelResult: "फिशिंग डिटेक्टरचा निकाल",
+    phishingModelPrediction: "अंदाज",
+    phishingModelRiskLevel: "मॉडेल जोखीम पातळी",
+    phishingModelRiskScore: "फिशिंग जोखीम स्कोअर",
+    phishingModelProbabilities: "वर्ग संभाव्यता",
+    phishingRequestFailed: "फिशिंग मॉडेल या संदेशाची तपासणी करू शकले नाही.",
+    smsModelResult: "बँकिंग SMS डिटेक्टरचा निकाल",
+    smsRequestFailed: "बँकिंग SMS डिटेक्टर या संदेशाची तपासणी करू शकला नाही.",
+  },
+  gu: {
+    phishingRemotePrivacy: "સંદેશનું વિશ્લેષણ SecurePayની ML સેવા દ્વારા થાય છે. તમારો PIN, OTP, પાસવર્ડ અથવા સંવેદનશીલ ખાતાની વિગતો દાખલ કરશો નહીં. લિંક્સ ખોલવામાં આવતી નથી અને મોડેલનું પરિણામ સુરક્ષાની ખાતરી આપતું નથી.",
+    phishingChecking: "ફિશિંગ મોડેલ દ્વારા તપાસ થઈ રહી છે…",
+    phishingModelResult: "ફિશિંગ ડિટેક્ટરનું પરિણામ",
+    phishingModelPrediction: "અનુમાન",
+    phishingModelRiskLevel: "મોડેલ જોખમ સ્તર",
+    phishingModelRiskScore: "ફિશિંગ જોખમ સ્કોર",
+    phishingModelProbabilities: "વર્ગ સંભાવનાઓ",
+    phishingRequestFailed: "ફિશિંગ મોડેલ આ સંદેશ તપાસી શક્યું નથી.",
+    smsModelResult: "બેંકિંગ SMS ડિટેક્ટરનું પરિણામ",
+    smsRequestFailed: "બેંકિંગ SMS ડિટેક્ટર આ સંદેશ તપાસી શક્યું નથી.",
+  },
+};
