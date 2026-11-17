@@ -1,9 +1,21 @@
 import { useCallback, useEffect, useMemo, useRef, useState, createContext, useContext } from "react";
-import { Link, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
+import { Link, matchPath, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { cyberTrustTranslations, helpContent, mlTranslations, passwordStrengthTranslations, presentationTranslations, supplementalTranslations, translateRiskFactor } from "./shared";
 import CyberTrustScore from "../components/CyberTrustScore";
 import PhishingCheck from "../components/PhishingCheck";
 import PasswordStrengthChecker from "../components/PasswordStrengthChecker";
+import NotFound from "./NotFound";
+import {
+  createDemoTransaction,
+  fetchDemoDatabase,
+  fetchDemoDatabaseStatus,
+  markAllDemoAlertsRead,
+  recordDemoPasswordCheck,
+  recordDemoPhishingCheck,
+  updateDemoAlertStatus,
+  type DemoDatabase,
+  type DemoTransactionRecord,
+} from "../lib/supabase";
 import {
   Activity, ArrowDownLeft, ArrowLeft, ArrowRight, ArrowUpRight, BadgeCheck, Banknote,
   Bell, Check, CheckCircle2, ChevronDown, ChevronRight, CircleHelp, Clock3, Copy,
@@ -22,11 +34,21 @@ type Recipient = { id: string; name: string; upiId: string; phone: string; trust
 type Factor = { label: string; points: number };
 type Transaction = { id: string; sender: string; receiver: string; receiverUpi: string; amount: number; type: TxType; status: TxStatus; riskScore: number; riskLevel: RiskLevel; riskFactors: Factor[]; verificationRequired: string[]; verificationCompleted: string[]; timestamp: string; note: string; request?: boolean; reported?: boolean; reportReason?: string; reportedAt?: string };
 type SecurityEvent = { id: string; type: string; description: string; riskScore: number; timestamp: string; transactionId?: string };
-type Notice = { id: string; type: string; title: string; message: string; timestamp: string; read: boolean; transactionId?: string };
-type Draft = { recipient: Recipient; amount: number; note: string; type: "sent" | "request"; signals?: { newDevice?: boolean; unusualLocation?: boolean; timeOverride?: number; recentCount?: number } };
+type Notice = { id: string; type: string; title: string; message: string; timestamp: string; read: boolean; severity?: "Low" | "Medium" | "High" | "Critical"; transactionId?: string };
+type Draft = { recipient: Recipient; amount: number; note: string; type: "sent" | "request"; idempotencyKey?: string; signals?: { newDevice?: boolean; unusualLocation?: boolean; timeOverride?: number; recentCount?: number } };
 type AppData = { user: User; auth: { isAuthenticated: boolean; knownMobiles: string[]; lastMobile: string }; loginMobile: string; balance: number; transactions: Transaction[]; recipients: Recipient[]; notifications: Notice[]; events: SecurityEvent[]; language: Language; darkMode: boolean; settings: { notifications: boolean; security: boolean; biometric: boolean; transactionAlerts: boolean }; draft: Draft | null; risk: { score: number; level: RiskLevel; factors: Factor[]; verification: string[] } | null; pinFailures: number; lockedUntil: number; introDone: boolean };
 
 const STORE_KEY = "securepay-demo-v1";
+const protectedRoutePatterns = [
+  "/", "/scan", "/send", "/request", "/recipients", "/amount", "/review", "/request/review",
+  "/risk", "/pin", "/otp", "/biometric", "/success/:id", "/request-sent/:id", "/blocked",
+  "/blocked/:id", "/transaction/:id", "/history", "/balance/verify", "/balance/auth/pin",
+  "/balance/auth/fingerprint", "/balance", "/profile/details", "/notifications", "/security",
+  "/security/activity", "/profile", "/settings", "/language", "/help",
+];
+function isProtectedRoute(pathname: string) {
+  return protectedRoutePatterns.some(path => matchPath({ path, end: true }, pathname) !== null);
+}
 const initialRecipients: Recipient[] = [
   { id: "rahul", name: "Rahul Sharma", upiId: "rahul@securepay", phone: "+91 98765 43210", trusted: true, riskLevel: "trusted", lastTransaction: "Paid yesterday" },
   { id: "priya", name: "Priya Patil", upiId: "priya@securepay", phone: "+91 98220 15432", trusted: true, riskLevel: "trusted", lastTransaction: "Paid 2 days ago" },
@@ -43,11 +65,119 @@ const seededTransactions = (): Transaction[] => {
     { id: "SP202610051030", sender: "Ritu Ratnaparkhi", receiver: "Secure Cafe", receiverUpi: "securecafe@upi", amount: 450, type: "sent", status: "successful", riskScore: 5, riskLevel: "LOW", riskFactors: [], verificationRequired: ["UPI PIN"], verificationCompleted: ["UPI PIN"], timestamp: new Date(now - 345600000).toISOString(), note: "" },
   ];
 };
-const defaults: AppData = { user: { id: "demo-ritu", name: "Ritu Ratnaparkhi", phone: "9876543210", upiId: "ritu@securepay", balance: 48750, bankAccount: "Secure Demo Bank ···· 4521", trustedDevices: ["SecurePay demo browser"], usualLocations: ["Pune, Maharashtra"] }, auth: { isAuthenticated: false, knownMobiles: ["9876543210"], lastMobile: "" }, loginMobile: "", balance: 48750, transactions: seededTransactions(), recipients: initialRecipients, notifications: [
+function normalizedMobile(value: string) { return value.replace(/\D/g, "").slice(-10); }
+const defaults: AppData = { user: { id: "demo-ritu", name: "Ritu Ratnaparkhi", phone: "9876543210", upiId: "ritu@securepay", balance: 48750, bankAccount: "Demo account", trustedDevices: ["SecurePay demo browser"], usualLocations: ["Pune, Maharashtra"] }, auth: { isAuthenticated: false, knownMobiles: ["9876543210"], lastMobile: "" }, loginMobile: "", balance: 48750, transactions: seededTransactions(), recipients: initialRecipients, notifications: [
   { id: "n1", type: "System Update", title: "Welcome to SecurePay", message: "Explore the risk-adaptive security demo. No real money is processed.", timestamp: new Date().toISOString(), read: false },
   { id: "n2", type: "Payment Received", title: "Money received", message: "₹2,500 received from Rahul Sharma.", timestamp: new Date(Date.now() - 3600000).toISOString(), read: false },
 ], events: [{ id: "e1", type: "Protection active", description: "Risk detection and adaptive verification are active.", riskScore: 0, timestamp: new Date().toISOString() }], language: "en", darkMode: false, settings: { notifications: true, security: true, biometric: true, transactionAlerts: true }, draft: null, risk: null, pinFailures: 0, lockedUntil: 0, introDone: false };
-function readStore(): AppData { try { const saved = localStorage.getItem(STORE_KEY); if (!saved) return defaults; const parsed = JSON.parse(saved); const recipients = parsed.recipients?.map((recipient: Recipient) => { const seeded = defaults.recipients.find(item => item.id === recipient.id); return seeded && !recipient.phone ? { ...recipient, phone: seeded.phone } : recipient; }) ?? defaults.recipients; return { ...defaults, ...parsed, user: { ...defaults.user, ...parsed.user }, auth: { ...defaults.auth, ...parsed.auth, knownMobiles: parsed.auth?.knownMobiles ?? defaults.auth.knownMobiles }, recipients, settings: { ...defaults.settings, ...parsed.settings } }; } catch { return defaults; } }
+function readStore(): AppData { try { const saved = localStorage.getItem(STORE_KEY); if (!saved) return defaults; const parsed = JSON.parse(saved); const recipients = parsed.recipients?.map((recipient: Recipient) => { const seeded = defaults.recipients.find(item => item.id === recipient.id); return seeded && !recipient.phone ? { ...recipient, phone: seeded.phone } : recipient; }) ?? defaults.recipients; return { ...defaults, ...parsed, user: { ...defaults.user, ...parsed.user, bankAccount: defaults.user.bankAccount }, auth: { ...defaults.auth, ...parsed.auth, knownMobiles: parsed.auth?.knownMobiles ?? defaults.auth.knownMobiles }, recipients, settings: { ...defaults.settings, ...parsed.settings } }; } catch { return defaults; } }
+
+function mapDatabaseTransaction(transaction: DemoTransactionRecord, sender: string): Transaction {
+  const status: Record<DemoTransactionRecord["status"], TxStatus> = {
+    Success: "successful",
+    Pending: "pending",
+    Failed: "failed",
+    Flagged: "blocked",
+    "Verification Required": "pending",
+  };
+  const riskLevel: RiskLevel | undefined = transaction.risk
+    ? transaction.risk.risk_level === "Low" ? "LOW"
+      : transaction.risk.risk_level === "Medium" ? "MEDIUM" : "HIGH"
+    : undefined;
+  const riskFactors = transaction.risk
+    ? [
+        { label: "Amount risk", points: transaction.risk.amount_risk },
+        { label: "Behavior risk", points: transaction.risk.behaviour_risk },
+        { label: "Recipient risk", points: transaction.risk.recipient_risk },
+        { label: "Frequency risk", points: transaction.risk.frequency_risk },
+      ].filter(factor => factor.points > 0)
+    : [];
+  return {
+    id: transaction.id,
+    sender,
+    receiver: transaction.recipient_name,
+    receiverUpi: transaction.recipient_upi ?? "",
+    amount: transaction.amount,
+    type: "sent",
+    status: status[transaction.status],
+    riskScore: transaction.risk?.risk_score ?? 0,
+    riskLevel: riskLevel ?? "LOW",
+    riskFactors,
+    verificationRequired: [],
+    verificationCompleted: [],
+    timestamp: transaction.transaction_time,
+    note: "Simulated demo transaction. No funds were transferred.",
+  };
+}
+
+function mapDatabaseToAppData(localData: AppData, database: DemoDatabase): AppData {
+  const primaryAccount = database.accounts[0];
+  const databaseMobile = database.user.mobile_number
+    ? normalizedMobile(database.user.mobile_number)
+    : "";
+  const balance = database.accounts.reduce((total, account) => total + Number(account.balance), 0);
+  const transactionIds = new Map(database.transactions.map(transaction => [transaction.id, transaction]));
+  const localOnlyTransactions = localData.transactions.filter(transaction =>
+    (transaction.type === "request" || transaction.type === "received") &&
+    !defaults.transactions.some(seed => seed.id === transaction.id),
+  );
+  const localOnlyNotifications = localData.notifications.filter(notification =>
+    !defaults.notifications.some(seed => seed.id === notification.id) &&
+    !database.alerts.some(alert => alert.transaction_id === notification.transactionId),
+  );
+  return {
+    ...localData,
+    auth: {
+      ...localData.auth,
+      knownMobiles: databaseMobile
+        ? [...new Set([...localData.auth.knownMobiles, databaseMobile])]
+        : localData.auth.knownMobiles,
+      lastMobile: databaseMobile || localData.auth.lastMobile,
+    },
+    user: {
+      ...localData.user,
+      id: database.user.id,
+      name: database.user.full_name,
+      phone: database.user.mobile_number ?? "",
+      upiId: primaryAccount?.upi_id ?? "",
+      balance,
+      bankAccount: primaryAccount
+        ? `${primaryAccount.bank_name} ···· ${primaryAccount.account_number_last4}`
+        : defaults.user.bankAccount,
+    },
+    balance,
+    transactions: [
+      ...database.transactions.map(transaction => mapDatabaseTransaction(transaction, database.user.full_name)),
+      ...localOnlyTransactions,
+    ].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()),
+    notifications: [...database.alerts.map(alert => ({
+      id: alert.id,
+      type: alert.alert_type,
+      title: alert.title,
+      message: alert.message,
+      severity: alert.severity,
+      timestamp: alert.created_at,
+      read: alert.status !== "Unread",
+      transactionId: alert.transaction_id ?? undefined,
+    })), ...localOnlyNotifications],
+    events: database.activity.map(activity => ({
+      id: activity.id,
+      type: activity.activity_type,
+      description: activity.description,
+      riskScore: activity.related_transaction_id
+        ? transactionIds.get(activity.related_transaction_id)?.risk?.risk_score ?? 0
+        : 0,
+      timestamp: activity.created_at,
+      transactionId: activity.related_transaction_id ?? undefined,
+    })),
+    language: database.user.preferred_language === "Hindi"
+      ? "hi"
+      : database.user.preferred_language === "Marathi"
+        ? "mr"
+        : "en",
+  };
+}
+
 const AppContext = createContext<any>(null);
 const translations: Record<Language, Record<string, string>> = {
   en: { home: "Home", scan: "Scan", history: "History", security: "Security", profile: "Profile", send: "Send Money", request: "Request Money", available: "Available balance", quickActions: "Quick actions", recent: "Recent activity", seeAll: "See all", addMoney: "Add money", scanQR: "Scan QR", payBills: "Pay bills", recharge: "Mobile recharge", bankTransfer: "Bank transfer", contacts: "Contacts", notifications: "Notifications", securityCenter: "Security Center", protected: "Your account is protected", settings: "Settings", language: "Language", help: "Help & FAQ", continue: "Continue", cancel: "Cancel", done: "Done", successful: "Payment Successful", risk: "Risk analysis", demo: "Demo mode", sendTo: "Send to", amount: "Amount", note: "Add a note", proceed: "Proceed securely", low: "LOW RISK", medium: "MEDIUM RISK", high: "HIGH RISK", critical: "CRITICAL RISK", verify: "Continue verification", enterPin: "Enter your demo UPI PIN", otp: "Verification code", details: "Transaction details", manage: "Manage recipients", logout: "Log out", faq: "Frequently asked questions", darkMode: "Dark mode", balance: "Balance & bank", profileTitle: "Your profile", markRead: "Mark all as read", clear: "Clear notifications", recentEvents: "Recent security events", requestSent: "Payment request sent", scanTitle: "Scan & pay", chooseRecipient: "Choose a recipient", enterUpi: "Enter UPI ID", recipient: "Recipient", review: "Review payment", back: "Back", all: "All", sent: "Sent", received: "Received", blocked: "Blocked", pending: "Pending", search: "Search", pay: "Pay", secureAccount: "SecurePay is a demonstration prototype. No real money or banking transactions are processed." },
@@ -91,14 +221,44 @@ function calcRisk(draft: Draft, data: AppData) {
 }
 
 function SecurePay() {
-  const [data, setData] = useState<AppData>(readStore);
+  const [storedData, setData] = useState<AppData>(readStore);
+  const [database, setDatabase] = useState<DemoDatabase | null>(null);
+  const [databaseStatus, setDatabaseStatus] = useState<"loading" | "ready" | "seed-missing" | "error">("loading");
+  const [databaseError, setDatabaseError] = useState("");
   const [toast, setToast] = useState("");
   const [presentationMode, setPresentationMode] = useState(false);
   const [balanceAuthorized, setBalanceAuthorized] = useState(false);
   const [balanceShown, setBalanceShown] = useState(false);
+  const data = useMemo(
+    () => database ? mapDatabaseToAppData(storedData, database) : storedData,
+    [storedData, database],
+  );
+  const loadDemoDatabase = useCallback(async () => {
+    setDatabaseStatus("loading");
+    setDatabaseError("");
+    try {
+      await fetchDemoDatabaseStatus();
+      const loaded = await fetchDemoDatabase();
+      setDatabase(loaded);
+      setDatabaseStatus("ready");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown database error";
+      setDatabaseError(message);
+      setDatabaseStatus(message.includes("not seeded yet") ? "seed-missing" : "error");
+    }
+  }, []);
   const navigate = useNavigate(); const location = useLocation();
-  useEffect(() => { setData(v => v.user.balance === v.balance ? v : { ...v, user: { ...v.user, balance: v.balance } }); }, [data.balance]);
-  useEffect(() => { localStorage.setItem(STORE_KEY, JSON.stringify(data)); document.documentElement.classList.toggle("dark", data.darkMode); }, [data]);
+  useEffect(() => { void loadDemoDatabase(); }, [loadDemoDatabase]);
+  useEffect(() => {
+    if (!database) setData(v => v.user.balance === v.balance ? v : { ...v, user: { ...v.user, balance: v.balance } });
+  }, [database, storedData.balance]);
+  useEffect(() => {
+    const persistedData = database
+      ? { ...storedData, user: defaults.user, balance: defaults.balance, transactions: defaults.transactions, notifications: defaults.notifications, events: defaults.events }
+      : storedData;
+    localStorage.setItem(STORE_KEY, JSON.stringify(persistedData));
+    document.documentElement.classList.toggle("dark", storedData.darkMode);
+  }, [storedData, database]);
   useEffect(() => {
     const syncFromPreview = (storageEvent: StorageEvent) => {
       if (storageEvent.key !== STORE_KEY) return;
@@ -116,42 +276,114 @@ function SecurePay() {
   const unlockBalance = () => { setBalanceAuthorized(true); setBalanceShown(true); navigate("/balance"); };
   const notify = (type: string, title: string, message: string, transactionId?: string) => { if (!data.settings.notifications || (!data.settings.transactionAlerts && ["payment", "blocked"].some(word => type.toLowerCase().includes(word)))) return; setData(v => { const duplicate = v.notifications.some(n => (transactionId && n.transactionId === transactionId && n.title === title) || (!transactionId && n.title === title && n.message === message)); if (duplicate) return v; return { ...v, notifications: [{ id: transactionId ? `n-${transactionId}-${title}` : `n${Date.now()}`, type, title, message, timestamp: new Date().toISOString(), read: false, transactionId }, ...v.notifications] }; }); };
   const event = (type: string, description: string, score = 0, transactionId?: string) => setData(v => { const duplicate = v.events.some(e => (transactionId && e.transactionId === transactionId && e.type === type) || (!transactionId && e.type === type && e.description === description)); if (duplicate) return v; return { ...v, events: [{ id: transactionId ? `e-${transactionId}-${type}` : `e${Date.now()}`, type, description, riskScore: score, timestamp: new Date().toISOString(), transactionId }, ...v.events] }; });
-  const beginDraft = (draft: Draft) => { const risk = calcRisk(draft, data); if (!data.settings.biometric) risk.verification = risk.verification.filter(step => step !== "Biometric"); const now = new Date().toISOString(); setData(v => ({ ...v, draft, risk, events: [{ id: `e${Date.now() + 1}`, type: "Risk analysis completed", description: `Risk score ${risk.score} · ${risk.level} risk.`, riskScore: risk.score, timestamp: now }, { id: `e${Date.now()}`, type: "Payment initiated", description: `${money(draft.amount)} to ${draft.recipient.name}.`, riskScore: 0, timestamp: now }, ...v.events] })); navigate("/risk"); };
+  const saveDatabaseTransaction = async (
+    draft: Draft,
+    risk: NonNullable<AppData["risk"]>,
+    status: "Success" | "Flagged",
+  ) => {
+    if (!database) return null;
+    const componentRisk = (matches: (label: string) => boolean) =>
+      Math.min(100, risk.factors.filter(factor => matches(factor.label)).reduce((total, factor) => total + factor.points, 0));
+    try {
+      const { transaction } = await createDemoTransaction({
+        idempotencyKey: draft.idempotencyKey ?? crypto.randomUUID(),
+        recipientName: draft.recipient.name,
+        recipientUpi: draft.recipient.upiId,
+        amount: draft.amount,
+        transactionType: draft.recipient.upiId.endsWith("@billpay")
+          ? "Bill Payment"
+          : draft.recipient.name.toLowerCase().includes("recharge")
+            ? "Recharge"
+            : "UPI",
+        recipientType: draft.recipient.trusted ? "Existing" : "New",
+        riskScore: risk.score,
+        riskLevel: risk.level === "LOW" ? "Low" : risk.level === "MEDIUM" ? "Medium" : "High",
+        amountRisk: componentRisk(label => label.startsWith("Amount")),
+        behaviourRisk: componentRisk(label => /device|location|time/i.test(label)),
+        recipientRisk: componentRisk(label => /recipient/i.test(label)),
+        frequencyRisk: componentRisk(label => /rapid|repeated/i.test(label)),
+        explanation: `${risk.level} local demo risk assessment. No payment was made.`,
+        finalStatus: status,
+      });
+      if (!transaction.reference_number) throw new Error("The demo API returned no transaction reference.");
+      await loadDemoDatabase();
+      return transaction;
+    } catch (error) {
+      setToast(`The simulated transaction could not be fully saved: ${error instanceof Error ? error.message : "Unknown error"}`);
+      await loadDemoDatabase();
+      return null;
+    }
+  };
+  const beginDraft = (draft: Draft) => { const transactionDraft = { ...draft, idempotencyKey: draft.idempotencyKey ?? crypto.randomUUID() }; const risk = calcRisk(transactionDraft, data); if (!data.settings.biometric) risk.verification = risk.verification.filter(step => step !== "Biometric"); const now = new Date().toISOString(); setData(v => ({ ...v, draft: transactionDraft, risk, events: [{ id: `e${Date.now() + 1}`, type: "Risk analysis completed", description: `Risk score ${risk.score} · ${risk.level} risk.`, riskScore: risk.score, timestamp: now }, { id: `e${Date.now()}`, type: "Payment initiated", description: `${money(transactionDraft.amount)} to ${transactionDraft.recipient.name}.`, riskScore: 0, timestamp: now }, ...v.events] })); navigate("/risk"); };
   const continueVerification = () => { if (!data.risk || !data.draft) return; if (data.risk.level === "CRITICAL") event("Critical transaction held", `${money(data.draft.amount)} to ${data.draft.recipient.name} requires a security review.`, data.risk.score); navigate("/pin"); };
-  const completeTransaction = (completed: string[], requiredOverride?: string[]) => {
+  const completeTransaction = async (completed: string[], requiredOverride?: string[]) => {
     if (!data.draft || !data.risk) return;
     const id = `SP${new Date().toISOString().replace(/\D/g, "").slice(0, 14)}`;
-    const tx: Transaction = { id, sender: "Ritu Ratnaparkhi", receiver: data.draft.recipient.name, receiverUpi: data.draft.recipient.upiId, amount: data.draft.amount, type: data.draft.type, status: data.draft.type === "request" ? "pending" : "successful", riskScore: data.risk.score, riskLevel: data.risk.level, riskFactors: data.risk.factors, verificationRequired: requiredOverride ?? data.risk.verification, verificationCompleted: completed, timestamp: new Date().toISOString(), note: data.draft.note, request: data.draft.type === "request" };
+    let tx: Transaction = { id, sender: data.user.name, receiver: data.draft.recipient.name, receiverUpi: data.draft.recipient.upiId, amount: data.draft.amount, type: data.draft.type, status: data.draft.type === "request" ? "pending" : "successful", riskScore: data.risk.score, riskLevel: data.risk.level, riskFactors: data.risk.factors, verificationRequired: requiredOverride ?? data.risk.verification, verificationCompleted: completed, timestamp: new Date().toISOString(), note: data.draft.note, request: data.draft.type === "request" };
+    if (tx.type === "sent" && database) {
+      const saved = await saveDatabaseTransaction(data.draft, data.risk, "Success");
+      if (!saved) return;
+      tx = { ...tx, id: saved.id, sender: database.user.full_name, timestamp: saved.transaction_time };
+    }
     setData(v => ({ ...v, transactions: [tx, ...v.transactions], balance: tx.status === "successful" && tx.type === "sent" ? v.balance - tx.amount : tx.status === "successful" && tx.type === "received" ? v.balance + tx.amount : v.balance, draft: null, pinFailures: 0, risk: data.risk }));
     if (tx.type === "request") { notify("Payment Request", "Payment request sent", `You requested ${money(tx.amount)} from ${tx.receiver}.`, id); event("Request sent", `${money(tx.amount)} requested from ${tx.receiver}.`, data.risk.score, id); navigate(`/request-sent/${id}`); }
     else {
       if (tx.riskLevel === "HIGH") {
-        notify("High-risk payment completed", "High-risk payment completed", `${money(tx.amount)} paid to ${tx.receiver}. This transaction had a risk score of ${tx.riskScore} and required additional verification.`, tx.id);
-        event("High-risk transaction approved", `Transaction ${tx.id} • ${money(tx.amount)} to ${tx.receiver} • Risk score ${tx.riskScore} • Risk factors: ${riskFactorSummary(tx.riskFactors)} • Verification: ${completed.join(" + ") || "PIN"} • Timestamp ${new Date(tx.timestamp).toISOString()}`, tx.riskScore, tx.id);
+        notify("High-risk simulated transaction", "High-risk simulated transaction completed", `A simulated ${money(tx.amount)} transaction record was created for ${tx.receiver}. No funds were transferred. Risk score ${tx.riskScore}; additional verification was completed.`, tx.id);
+        event("High-risk transaction approved (simulation)", `Simulated transaction record ${tx.id} • ${money(tx.amount)} to ${tx.receiver} • No funds were transferred • Risk score ${tx.riskScore} • Risk factors: ${riskFactorSummary(tx.riskFactors)} • Verification: ${completed.join(" + ") || "PIN"} • Timestamp ${new Date(tx.timestamp).toISOString()}`, tx.riskScore, tx.id);
       } else if (tx.riskLevel === "CRITICAL") {
         event("Critical transaction approved after enhanced verification", `Transaction ${tx.id} • ${money(tx.amount)} to ${tx.receiver} • Risk score ${tx.riskScore} • Risk factors: ${riskFactorSummary(tx.riskFactors)} • Verification: ${completed.join(" + ") || "PIN + OTP + Fingerprint"} • Timestamp ${new Date(tx.timestamp).toISOString()}`, tx.riskScore, tx.id);
       }
-      notify("Payment Successful", "Payment successful", `Payment of ${money(tx.amount)} to ${tx.receiver} was successful.`, id);
-      event("Payment successful", `Paid ${money(tx.amount)} to ${tx.receiver}.`, data.risk.score, id);
-      navigate(`/success/${id}`);
+      notify("Payment Successful", "Payment successful", `Simulated payment of ${money(tx.amount)} to ${tx.receiver} completed. No funds were transferred.`, tx.id);
+      event("Payment successful", `Simulated payment of ${money(tx.amount)} to ${tx.receiver}. No funds were transferred.`, data.risk.score, tx.id);
+      navigate(`/success/${tx.id}`);
     }
   };
-  const simulateIncoming = () => { const id = `SP${new Date().toISOString().replace(/\D/g, "").slice(0, 14)}`; const tx: Transaction = { id, sender: "Rahul Sharma", receiver: "Ritu Ratnaparkhi", receiverUpi: "ritu@securepay", amount: 500, type: "received", status: "successful", riskScore: 4, riskLevel: "LOW", riskFactors: [], verificationRequired: [], verificationCompleted: [], timestamp: new Date().toISOString(), note: "Demo incoming payment" }; setData(v => ({ ...v, transactions: [tx, ...v.transactions], balance: v.balance + tx.amount })); notify("Payment Received", "Money received", "₹500 received from Rahul Sharma."); event("Payment received", "₹500 received from Rahul Sharma.", 4, id); navigate(`/transaction/${id}`); };
-  const blockTransaction = () => {
+  const simulateIncoming = () => { const id = `SP${new Date().toISOString().replace(/\D/g, "").slice(0, 14)}`; const tx: Transaction = { id, sender: "Rahul Sharma", receiver: data.user.name, receiverUpi: data.user.upiId, amount: 500, type: "received", status: "successful", riskScore: 4, riskLevel: "LOW", riskFactors: [], verificationRequired: [], verificationCompleted: [], timestamp: new Date().toISOString(), note: "Demo incoming payment" }; setData(v => ({ ...v, transactions: [tx, ...v.transactions], balance: v.balance + tx.amount })); notify("Payment Received", "Money received", "₹500 received from Rahul Sharma."); event("Payment received", "₹500 received from Rahul Sharma.", 4, id); navigate(`/transaction/${id}`); };
+  const blockTransaction = async () => {
     if (!data.draft || !data.risk) return;
     const id = `SP${new Date().toISOString().replace(/\D/g, "").slice(0, 14)}`;
-    const tx: Transaction = { id, sender: "Ritu Ratnaparkhi", receiver: data.draft.recipient.name, receiverUpi: data.draft.recipient.upiId, amount: data.draft.amount, type: "sent", status: "blocked", riskScore: data.risk.score, riskLevel: data.risk.level, riskFactors: data.risk.factors, verificationRequired: data.risk.verification, verificationCompleted: [], timestamp: new Date().toISOString(), note: data.draft.note };
+    let tx: Transaction = { id, sender: data.user.name, receiver: data.draft.recipient.name, receiverUpi: data.draft.recipient.upiId, amount: data.draft.amount, type: "sent", status: "blocked", riskScore: data.risk.score, riskLevel: data.risk.level, riskFactors: data.risk.factors, verificationRequired: data.risk.verification, verificationCompleted: [], timestamp: new Date().toISOString(), note: data.draft.note };
+    if (database) {
+      const saved = await saveDatabaseTransaction(data.draft, data.risk, "Flagged");
+      if (!saved) return;
+      tx = { ...tx, id: saved.id, sender: database.user.full_name, timestamp: saved.transaction_time };
+    }
     setData(v => ({ ...v, transactions: [tx, ...v.transactions], draft: null }));
     if (tx.riskLevel === "CRITICAL") {
       notify("Critical transaction blocked", "Critical transaction blocked", `A ${money(tx.amount)} transaction to ${tx.receiver} was blocked because multiple suspicious signals were detected.`, tx.id);
       event("Critical transaction blocked", `Transaction ${tx.id} • ${money(tx.amount)} to ${tx.receiver} • Risk score ${tx.riskScore} • Risk factors: ${riskFactorSummary(tx.riskFactors)} • Status: BLOCKED • Timestamp ${new Date(tx.timestamp).toISOString()}`, tx.riskScore, tx.id);
     } else {
-      event("High-risk transaction blocked", `${money(tx.amount)} to ${tx.receiver} was blocked by security protection.`, data.risk.score, id);
-      notify("Transaction Blocked", "Security alert", `A high-risk payment of ${money(tx.amount)} to ${tx.receiver} was blocked.`, id);
+      event("High-risk transaction blocked", `${money(tx.amount)} to ${tx.receiver} was blocked by security protection.`, data.risk.score, tx.id);
+      notify("Transaction Blocked", "Security alert", `A high-risk simulated payment of ${money(tx.amount)} to ${tx.receiver} was blocked.`, tx.id);
     }
-    navigate(`/blocked/${id}`);
+    navigate(`/blocked/${tx.id}`);
   };
-  const markRead = (id: string) => setData(v => ({ ...v, notifications: v.notifications.map(n => n.id === id ? { ...n, read: true } : n) }));
+  const markRead = async (id: string) => {
+    if (database?.alerts.some(alert => alert.id === id)) {
+      try {
+        await updateDemoAlertStatus(id, "Read");
+        await loadDemoDatabase();
+      } catch (error) {
+        setToast(`The alert could not be updated: ${error instanceof Error ? error.message : "Unknown error"}`);
+      }
+      return;
+    }
+    setData(v => ({ ...v, notifications: v.notifications.map(n => n.id === id ? { ...n, read: true } : n) }));
+  };
+  const markAllRead = async () => {
+    if (database) {
+      try {
+        await markAllDemoAlertsRead();
+        setData(v => ({ ...v, notifications: v.notifications.map(notification => ({ ...notification, read: true })) }));
+        await loadDemoDatabase();
+      } catch (error) {
+        setToast(`Alerts could not be updated: ${error instanceof Error ? error.message : "Unknown error"}`);
+      }
+      return;
+    }
+    setData(v => ({ ...v, notifications: v.notifications.map(n => ({ ...n, read: true })) }));
+  };
   const startTest = (kind: RiskLevel) => {
     const configs: Record<RiskLevel, { recipient: Recipient; amount: number; signals: Draft["signals"] }> = {
       LOW: { recipient: data.recipients[0], amount: 500, signals: { recentCount: 0 } },
@@ -162,11 +394,11 @@ function SecurePay() {
     const conf = configs[kind]; beginDraft({ recipient: conf.recipient, amount: conf.amount, note: `Security demo — ${kind.toLowerCase()} risk`, type: "sent", signals: conf.signals });
   };
   const unread = data.notifications.filter(n => !n.read).length;
-  const context = { data, update, t, notify, event, beginDraft, continueVerification, completeTransaction, blockTransaction, simulateIncoming, markRead, startTest, toast, setToast, navigate, location, unread, unlockApp, unlockBalance, balanceAuthorized, balanceShown, setBalanceShown, presentationMode, setPresentationMode };
+  const context = { data, database, databaseStatus, databaseError, refreshDatabase: loadDemoDatabase, update, t, notify, event, beginDraft, continueVerification, completeTransaction, blockTransaction, simulateIncoming, markRead, markAllRead, startTest, toast, setToast, navigate, location, unread, unlockApp, unlockBalance, balanceAuthorized, balanceShown, setBalanceShown, presentationMode, setPresentationMode };
   return <AppContext.Provider value={context}><div className="secure-app min-h-screen bg-[#f5f7f6] text-slate-900 dark:bg-[#101815] dark:text-slate-100">
     <Routes>
-      <Route path="/login" element={<Login />} /><Route path="/auth/otp" element={<AccessOtp />} /><Route path="/auth/unlock" element={data.auth.lastMobile ? <UnlockPage /> : <Navigate to="/login" replace />} /><Route path="/auth/pin" element={data.auth.lastMobile ? <AccessPin /> : <Navigate to="/login" replace />} /><Route path="/auth/fingerprint" element={data.auth.lastMobile ? <AccessFingerprint /> : <Navigate to="/login" replace />} />
-      <Route path="*" element={data.auth.isAuthenticated ? <AppShell /> : <Navigate to="/login" replace />} />
+      <Route path="/login" element={<Login />} /><Route path="/auth/otp" element={<AccessOtp />} /><Route path="/auth/unlock" element={data.auth.lastMobile ? databaseStatus === "loading" ? <DemoProfileLoading /> : <UnlockPage /> : <Navigate to="/login" replace />} /><Route path="/auth/pin" element={data.auth.lastMobile ? databaseStatus === "loading" ? <DemoProfileLoading /> : <AccessPin /> : <Navigate to="/login" replace />} /><Route path="/auth/fingerprint" element={data.auth.lastMobile ? databaseStatus === "loading" ? <DemoProfileLoading /> : <AccessFingerprint /> : <Navigate to="/login" replace />} />
+      <Route path="*" element={data.auth.isAuthenticated ? databaseStatus === "loading" ? <DemoProfileLoading /> : <AppShell /> : isProtectedRoute(location.pathname) ? <Navigate to="/login" replace /> : <NotFound />} />
     </Routes>
     {toast && <div className="toast-pop"><CheckCircle2 size={18} />{toast}</div>}
     {presentationMode && <MobilePresentationPreview src={`${location.pathname}${location.search}`} t={t} onClose={() => setPresentationMode(false)} />}
@@ -183,9 +415,14 @@ function MobilePresentationPreview({ src, t, onClose }: { src: string; t: (key: 
         onClose();
         return;
       }
-      const widthScale = (window.innerWidth - 48) / 406;
-      const heightScale = (window.innerHeight - 32) / 860;
-      setScale(Math.max(0.35, Math.min(1, widthScale, heightScale)));
+
+      const availableWidth = window.innerWidth - 80;
+      const availableHeight = window.innerHeight - 120;
+
+      const scaleX = availableWidth / 406;
+      const scaleY = availableHeight / 936;
+
+      setScale(Math.min(1, scaleX, scaleY));
     };
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") onClose();
@@ -202,7 +439,7 @@ function MobilePresentationPreview({ src, t, onClose }: { src: string; t: (key: 
 
   return <div className="mobile-presentation-overlay" role="dialog" aria-modal="true" aria-label={t("mobilePresentationTitle")}>
     <button ref={closeButtonRef} type="button" className="mobile-presentation-close" aria-label={t("mobilePresentationClose")} onClick={onClose}><X size={19} /></button>
-    <div className="mobile-presentation-phone" style={{ transform: `scale(${scale})` }}>
+    <div className="mobile-presentation-phone">
       <iframe src={src} title={t("mobilePresentationFrame")} />
     </div>
   </div>;
@@ -220,12 +457,12 @@ function AppShell() {
   return <div className={`app-frame ${hideNav ? "flow-mode" : ""}`}>
     <aside className="desktop-sidebar"><div className="brand-lockup"><div className="brand-mark"><Shield size={21} /><span>₹</span></div><div><b>SecurePay</b><small>payments, protected</small></div></div><nav>{navItems.map(({ path, key, icon: Icon }) => <Link key={path} to={path} className={`side-link ${isActive(path) ? "active" : ""}`}><Icon size={19} /><span>{t(key)}</span>{key === "security" && <i className="live-dot" />}</Link>)}</nav><div className="sidebar-bottom"><div className="demo-pill"><span />{t("demo")}</div><div className="sidebar-disclaimer">Demo prototype · No real money involved</div></div></aside>
     <main className="app-main">
-      <header className="topbar"><button className="mobile-brand" onClick={() => navigate("/")}><span className="brand-mark small"><Shield size={17} /><span>₹</span></span><b>SecurePay</b></button><div className="desktop-page-title">{title}</div><div className="topbar-actions"><button type="button" className="mobile-presentation-toggle" aria-label={t("mobilePresentationMode")} aria-pressed={presentationMode} onClick={() => setPresentationMode(true)}><Smartphone size={16} /><span>{t("mobilePresentationMode")}</span></button><span className="header-demo">DEMO MODE</span><button aria-label={t("notifications")} className="icon-button notification-button" onClick={() => navigate("/notifications")}><Bell size={19} />{unread > 0 && <i>{unread}</i>}</button><button className="top-avatar" onClick={() => navigate("/profile")}>RR</button></div></header>
+      <header className="topbar"><button className="mobile-brand" onClick={() => navigate("/")}><span className="brand-mark small"><Shield size={17} /><span>₹</span></span><b>SecurePay</b></button><div className="desktop-page-title">{title}</div><div className="topbar-actions"><button type="button" className="mobile-presentation-toggle" aria-label={t("mobilePresentationMode")} aria-pressed={presentationMode} onClick={() => setPresentationMode(true)}><Smartphone size={16} /><span>{t("mobilePresentationMode")}</span></button><span className="header-demo">DEMO MODE</span><button aria-label={t("notifications")} className="icon-button notification-button" onClick={() => navigate("/notifications")}><Bell size={19} />{unread > 0 && <i>{unread}</i>}</button><button className="top-avatar" onClick={() => navigate("/profile")}>{data.user.name.split(" ").map(part => part[0]).slice(0, 2).join("")}</button></div></header>
       <div className="page-content"><Routes>
         <Route path="/" element={<HomePage />} /><Route path="/scan" element={<ScanPage />} /><Route path="/send" element={<RecipientPage mode="sent" />} /><Route path="/request" element={<RecipientPage mode="request" />} /><Route path="/recipients" element={<ManageRecipients />} />
         <Route path="/amount" element={<AmountPage />} /><Route path="/review" element={<ReviewPage />} /><Route path="/request/review" element={<ReviewPage />} /><Route path="/risk" element={<RiskPage />} /><Route path="/pin" element={<PinPage />} /><Route path="/otp" element={<OtpPage />} /><Route path="/biometric" element={<BiometricPage />} />
         <Route path="/success/:id" element={<ResultPage status="success" />} /><Route path="/request-sent/:id" element={<ResultPage status="request" />} /><Route path="/blocked" element={<ResultPage status="blocked" />} /><Route path="/blocked/:id" element={<ResultPage status="blocked" />} /><Route path="/transaction/:id" element={<TransactionDetail />} />
-        <Route path="/history" element={<HistoryPage />} /><Route path="/balance/verify" element={<BalanceAuthPage />} /><Route path="/balance/auth/pin" element={<BalanceAuthPage initialMethod="pin" />} /><Route path="/balance/auth/fingerprint" element={<BalanceAuthPage initialMethod="fingerprint" />} /><Route path="/balance" element={balanceAuthorized ? <BalancePage /> : <Navigate to="/balance/verify" replace />} /><Route path="/profile/details" element={<ProfileDetails />} /><Route path="/notifications" element={<NotificationsPage />} /><Route path="/security" element={<SecurityPage />} /><Route path="/security/activity" element={<SecurityActivity />} /><Route path="/profile" element={<ProfilePage />} /><Route path="/settings" element={<SettingsPage />} /><Route path="/language" element={<LanguagePage />} /><Route path="/help" element={<HelpPage />} /><Route path="*" element={<HomePage />} />
+        <Route path="/history" element={<HistoryPage />} /><Route path="/balance/verify" element={<BalanceAuthPage />} /><Route path="/balance/auth/pin" element={<BalanceAuthPage initialMethod="pin" />} /><Route path="/balance/auth/fingerprint" element={<BalanceAuthPage initialMethod="fingerprint" />} /><Route path="/balance" element={balanceAuthorized ? <BalancePage /> : <Navigate to="/balance/verify" replace />} /><Route path="/profile/details" element={<ProfileDetails />} /><Route path="/notifications" element={<NotificationsPage />} /><Route path="/security" element={<SecurityPage />} /><Route path="/security/activity" element={<SecurityActivity />} /><Route path="/profile" element={<ProfilePage />} /><Route path="/settings" element={<SettingsPage />} /><Route path="/language" element={<LanguagePage />} /><Route path="/help" element={<HelpPage />} /><Route path="*" element={<NotFound />} />
       </Routes></div>
       {!hideNav && <><nav className="mobile-nav">{navItems.map(({ path, key, icon: Icon }) => <Link key={path} to={path} className={`mobile-nav-link ${isActive(path) ? "active" : ""}`}><span><Icon size={20} />{key === "security" && unread > 0 && <i className="nav-dot" />}</span><small>{t(key)}</small></Link>)}</nav><div className="mobile-footer-disclaimer">{t("secureAccount")}</div></>}
     </main>
@@ -236,17 +473,35 @@ function Avatar({ name, tone = "mint" }: { name: string; tone?: string }) { cons
 function Button({ children, onClick, variant = "primary", disabled = false, className = "", type = "button" }: any) { return <button type={type} disabled={disabled} onClick={onClick} className={`btn btn-${variant} ${className}`}>{children}</button>; }
 function SectionHeading({ title, action, onClick }: any) { return <div className="section-heading"><h2>{title}</h2>{action && <button onClick={onClick}>{action}<ChevronRight size={15} /></button>}</div>; }
 function DemoDisclaimer() { const { t } = useApp(); return <p className="disclaimer">{t("secureAccount")}</p>; }
+function DemoDatabaseNotice() {
+  const { database, databaseStatus, databaseError, refreshDatabase } = useApp();
+  const text = databaseStatus === "loading"
+    ? "Checking the local Supabase connection…"
+    : databaseStatus === "ready"
+      ? "Connected to the existing Supabase tables. All records shown are synthetic demo data; no funds are transferred."
+      : databaseStatus === "seed-missing"
+        ? "Supabase is reachable, but the demo user is not seeded. The page is showing local prototype data. Run supabase/seed.sql manually to load the demo records."
+        : database
+          ? `Supabase is temporarily unavailable; showing the last loaded synthetic database records. ${databaseError}`
+          : `Database unavailable; the page is showing local prototype data. ${databaseError}`;
+  return <div className="inline-demo-note" role="status" aria-live="polite">
+    <Shield size={14} />{text}
+    {databaseStatus === "error" && <button type="button" className="text-button" onClick={() => void refreshDatabase()}>Retry</button>}
+  </div>;
+}
 
 function HomePage() {
-  const { data, t, navigate, unread } = useApp(); const hour = new Date().getHours(); const greeting = hour < 12 ? t("greetingMorning") : hour < 17 ? t("greetingAfternoon") : t("greetingEvening");
+  const { data, database, t, navigate, unread } = useApp(); const hour = new Date().getHours(); const greeting = hour < 12 ? t("greetingMorning") : hour < 17 ? t("greetingAfternoon") : t("greetingEvening");
+  const securityScore = database?.securityScores[0]?.overall_score ?? 94;
   const recent = data.transactions.slice(0, 4);
   return <div className="home-page">
-    <div className="welcome-row"><div><div className="eyebrow">TUESDAY, {new Date().toLocaleDateString("en-IN", { day: "numeric", month: "long" }).toUpperCase()}</div><h1>{greeting}, <span>Ritu</span></h1><p>{t("homeTagline")}</p></div><button onClick={() => navigate("/notifications")} className="home-bell" aria-label="Open notifications"><Bell size={20} />{unread > 0 && <i>{unread}</i>}</button></div>
+    <DemoDatabaseNotice />
+    <div className="welcome-row"><div><div className="eyebrow">{new Date().toLocaleDateString("en-IN", { weekday: "long", day: "numeric", month: "long" }).toUpperCase()}</div><h1>{greeting}, <span>{data.user.name.split(" ")[0]}</span></h1><p>{t("homeTagline")}</p></div><button onClick={() => navigate("/notifications")} className="home-bell" aria-label="Open notifications"><Bell size={20} />{unread > 0 && <i>{unread}</i>}</button></div>
     <div className="home-grid"><div className="home-main-column">
-      <section className="balance-card"><div className="balance-card-top"><div className="bank-label"><span className="bank-emblem"><LandmarkIcon /></span><div><b>Secure Demo Bank</b><small>•••• 4521 <span className="connected"><i /> Connected</span></small></div></div><button onClick={() => navigate("/balance")} className="balance-more" aria-label="Balance details"><MoreHorizontal size={20} /></button></div><div className="balance-label">{t("available")}</div><div className="balance-amount"><span>₹ ••••••</span><button className="check-balance-link" onClick={() => navigate("/balance/verify")}>Check Balance</button></div><div className="balance-divider" /><div className="balance-quick-actions"><button onClick={() => navigate("/balance")}><span><Plus size={18} /></span>{t("addMoney")}</button><button onClick={() => navigate("/send")}><span><ArrowUpRight size={18} /></span>{t("send")}</button><button onClick={() => navigate("/request")}><span><ArrowDownLeft size={18} /></span>{t("request")}</button><button onClick={() => navigate("/scan")}><span><ScanLine size={18} /></span>{t("scan")}</button></div></section>
+      <section className="balance-card"><div className="balance-card-top"><div className="bank-label"><span className="bank-emblem"><LandmarkIcon /></span><div><b>{database?.accounts[0]?.bank_name ?? "Secure Demo Bank"}</b><small>{data.user.bankAccount.split("····")[1]?.trim() ?? "•••• 4521"} <span className="connected"><i /> Demo</span></small></div></div><button onClick={() => navigate("/balance")} className="balance-more" aria-label="Balance details"><MoreHorizontal size={20} /></button></div><div className="balance-label">{t("available")}</div><div className="balance-amount"><span>₹ ••••••</span><button className="check-balance-link" onClick={() => navigate("/balance/verify")}>Check Balance</button></div><div className="balance-divider" /><div className="balance-quick-actions"><button onClick={() => navigate("/balance")}><span><Plus size={18} /></span>{t("addMoney")}</button><button onClick={() => navigate("/send")}><span><ArrowUpRight size={18} /></span>{t("send")}</button><button onClick={() => navigate("/request")}><span><ArrowDownLeft size={18} /></span>{t("request")}</button><button onClick={() => navigate("/scan")}><span><ScanLine size={18} /></span>{t("scan")}</button></div></section>
       <section className="quick-section"><SectionHeading title={t("quickActions")} /><div className="quick-grid"><QuickAction icon={<QrCode />} label={t("scanQR")} color="mint" onClick={() => navigate("/scan")} /><QuickAction icon={<Send />} label={t("send")} color="blue" onClick={() => navigate("/send")} /><QuickAction icon={<ArrowDownLeft />} label={t("request")} color="purple" onClick={() => navigate("/request")} /><QuickAction icon={<Zap />} label={t("payBills")} color="amber" onClick={() => { const r = { id: "electricity", name: "Electricity", upiId: "electricity@billpay", phone: "", trusted: true, riskLevel: "trusted" as const, lastTransaction: "Bill payment" }; navigate("/amount", { state: { recipient: r } }); }} /><QuickAction icon={<Smartphone />} label={t("recharge")} color="rose" onClick={() => { const r = { id: "recharge", name: "Mobile Recharge", upiId: "recharge@securepay", phone: "", trusted: true, riskLevel: "trusted" as const, lastTransaction: "Recharge" }; navigate("/amount", { state: { recipient: r } }); }} /><QuickAction icon={<LandmarkIcon />} label={t("bankTransfer")} color="green" onClick={() => navigate("/send")} /><QuickAction icon={<Users />} label={t("contacts")} color="lavender" onClick={() => navigate("/send")} /></div></section>
       <section className="recent-section"><SectionHeading title={t("recent")} action={t("seeAll")} onClick={() => navigate("/history")} /><div className="transaction-list">{recent.map(tx => <TransactionRow key={tx.id} tx={tx} onClick={() => navigate(`/transaction/${tx.id}`)} />)}</div></section>
-    </div><aside className="home-side-column"><section className="security-summary"><div className="security-summary-head"><span className="security-icon"><ShieldCheck size={20} /></span><span className="status-pill"><i /> {t("active")}</span></div><h3>{t("protected")}</h3><p>Adaptive security is watching over every payment.</p><div className="score-line"><div><small>SECURITY SCORE</small><strong>94<span>/100</span></strong></div><div className="score-ring"><span>94</span></div></div><button onClick={() => navigate("/security")}>{t("viewSecurity")}<ArrowRight size={15} /></button></section>
+    </div><aside className="home-side-column"><section className="security-summary"><div className="security-summary-head"><span className="security-icon"><ShieldCheck size={20} /></span><span className="status-pill"><i /> {t("active")}</span></div><h3>{t("protected")}</h3><p>{database ? "Saved demo security score from Supabase." : "Adaptive security is watching over every payment."}</p><div className="score-line"><div><small>SECURITY SCORE</small><strong>{securityScore}<span>/100</span></strong></div><div className="score-ring"><span>{securityScore}</span></div></div><button onClick={() => navigate("/security")}>{t("viewSecurity")}<ArrowRight size={15} /></button></section>
       <section className="side-events"><SectionHeading title={t("securityActivity")} action="View all" onClick={() => navigate("/security/activity")} />{data.events.slice(0, 3).map(ev => <div className="mini-event" key={ev.id}><span><ShieldCheck size={15} /></span><div><b>{ev.type}</b><small>{relativeTime(ev.timestamp)}</small></div></div>)}</section>
       <button className="demo-promo" onClick={() => navigate("/settings")}><span><Sparkles size={18} /></span><div><b>{t("exploreScenarios")}</b><small>Test all four adaptive risk levels</small></div><ChevronRight size={17} /></button></aside></div>
     <DemoDisclaimer />
@@ -254,7 +509,7 @@ function HomePage() {
 }
 function LandmarkIcon() { return <CreditCard size={17} />; }
 function QuickAction({ icon, label, color, onClick }: any) { return <button className="quick-action" onClick={onClick}><span className={`quick-icon ${color}`}>{icon}</span><small>{label}</small></button>; }
-function TransactionRow({ tx, onClick }: { tx: Transaction; onClick: () => void }) { const incoming = tx.type === "received"; const statusText = incoming ? "Received" : tx.status === "blocked" ? "Blocked" : tx.type === "request" ? "Request" : "Paid"; const riskText = tx.status === "blocked" ? `${tx.riskLevel} • ${tx.riskScore}` : `${tx.riskLevel} risk`;
+function TransactionRow({ tx, onClick }: { tx: Transaction; onClick: () => void }) { const incoming = tx.type === "received"; const simulated = tx.note.includes("No funds were transferred."); const statusText = incoming ? "Received" : tx.status === "blocked" ? "Blocked" : tx.type === "request" ? "Request" : simulated ? "Simulated" : "Paid"; const riskText = tx.status === "blocked" ? `${tx.riskLevel} • ${tx.riskScore}` : `${tx.riskLevel} risk`;
 return <button className="transaction-row" onClick={onClick}><span className={`transaction-icon ${incoming ? "received" : tx.status === "blocked" ? "blocked" : "sent"}`}>{incoming ? <ArrowDownLeft size={17} /> : tx.status === "blocked" ? <ShieldAlert size={17} /> : <ArrowUpRight size={17} />}</span><span className="transaction-name"><b>{incoming ? tx.sender : tx.receiver}</b><small>{relativeTime(tx.timestamp)} · {statusText}</small></span><span className={`transaction-value ${incoming ? "positive" : ""}`}>{incoming ? "+" : "−"}{money(tx.amount)}<small className={`risk-text ${tx.riskLevel.toLowerCase()}`}>{riskText}</small></span><ChevronRight size={16} className="row-chevron" /></button>; }
 
 function RecipientPage({ mode }: { mode: "sent" | "request" }) {
@@ -302,7 +557,7 @@ function AmountPage() {
   if (!recipient) return <div className="narrow-page"><PageHeading back title={t("chooseRecipient")} /><Button onClick={() => navigate("/send")}>Choose a recipient</Button></div>;
   const submit = () => { const value = Number(amount); if (!Number.isFinite(value) || value <= 0) { setError(t("enterAmountError")); return; } const current = data.draft ?? { recipient, amount: 0, note: "", type: "sent" as const }; if (current.type === "sent" && value > data.balance) { setError(t("outsideBalance")); return; } update({ draft: { ...current, recipient, amount: value, note }, risk: null }); navigate(current.type === "request" ? "/request/review" : "/review"); };
   return <div className="narrow-page"><PageHeading back title={t("amount")} subtitle={data.draft?.type === "request" ? "Request a specific amount." : "How much would you like to send?"} /><div className="amount-recipient"><Avatar name={recipient.name} /><div><b>{recipient.name}</b><small>{recipient.upiId}</small></div><BadgeCheck size={16} className={recipient.trusted ? "verified-icon" : "muted-icon"} /></div>
-    <div className="amount-entry"><span>₹</span><input aria-label="Amount" inputMode="decimal" value={amount} onChange={e => { setAmount(e.target.value.replace(/[^0-9.]/g, "")); setError(""); }} placeholder="0" autoFocus /><small>Secure Demo Bank ···· 4521</small></div>
+    <div className="amount-entry"><span>₹</span><input aria-label="Amount" inputMode="decimal" value={amount} onChange={e => { setAmount(e.target.value.replace(/[^0-9.]/g, "")); setError(""); }} placeholder="0" autoFocus /><small>{data.user.bankAccount}</small></div>
     <div className="amount-chips">{[100, 500, 1000, 2000, 5000].map(x => <button key={x} onClick={() => { setAmount(String(x)); setError(""); }}>₹{x.toLocaleString("en-IN")}</button>)}</div>
     <label className="field-label">{t("note")} <span>Optional</span><input className="text-input" value={note} onChange={e => setNote(e.target.value)} placeholder="What's this for?" maxLength={50} /></label>
     {error && <p className="field-error">{error}</p>}<Button onClick={submit} className="full-button">{data.draft?.type === "request" ? "Review request" : t("continue")}<ArrowRight size={17} /></Button><p className="inline-demo-note"><Shield size={14} /> Demo transaction only — no real money moves.</p>
@@ -313,7 +568,7 @@ function ReviewPage() {
   const request = draft.type === "request";
   const { beginDraft } = useApp();
   const proceed = () => { beginDraft(draft); };
-  return <div className="narrow-page"><PageHeading back title={request ? "Review request" : t("review")} subtitle="Double-check the details before continuing." /><div className="review-card"><div className="review-person"><Avatar name={draft.recipient.name} tone="mint" /><div><small>{request ? "Request from" : t("sendTo")}</small><b>{draft.recipient.name}</b><span>{draft.recipient.upiId}</span></div><BadgeCheck className={draft.recipient.trusted ? "verified-icon" : "muted-icon"} size={18} /></div><div className="review-amount"><small>{t("amount")}</small><strong>{money(draft.amount)}</strong></div>{draft.note && <div className="review-line"><span>Note</span><b>{draft.note}</b></div>}<div className="review-line"><span>{request ? "Request to" : "Paying from"}</span><b>{request ? "Ritu Ratnaparkhi" : "Secure Demo Bank ···· 4521"}</b></div>{!request && <div className="review-line"><span>Available after payment</span><b>••••••</b></div>}</div><div className="risk-precheck"><ShieldCheck size={19} /><div><b>Risk-adaptive protection</b><small>SecurePay will assess this {request ? "request" : "payment"} before it proceeds.</small></div></div><Button onClick={proceed} className="full-button">{request ? "Continue securely" : t("proceed")}<ArrowRight size={17} /></Button><p className="inline-demo-note"><LockKeyhole size={14} /> This is a simulated demo flow.</p></div>;
+  return <div className="narrow-page"><PageHeading back title={request ? "Review request" : t("review")} subtitle="Double-check the details before continuing." /><div className="review-card"><div className="review-person"><Avatar name={draft.recipient.name} tone="mint" /><div><small>{request ? "Request from" : t("sendTo")}</small><b>{draft.recipient.name}</b><span>{draft.recipient.upiId}</span></div><BadgeCheck className={draft.recipient.trusted ? "verified-icon" : "muted-icon"} size={18} /></div><div className="review-amount"><small>{t("amount")}</small><strong>{money(draft.amount)}</strong></div>{draft.note && <div className="review-line"><span>Note</span><b>{draft.note}</b></div>}<div className="review-line"><span>{request ? "Request to" : "Paying from"}</span><b>{request ? data.user.name : data.user.bankAccount}</b></div>{!request && <div className="review-line"><span>Available after payment</span><b>••••••</b></div>}</div><div className="risk-precheck"><ShieldCheck size={19} /><div><b>Risk-adaptive protection</b><small>SecurePay will assess this {request ? "request" : "payment"} before it proceeds.</small></div></div><Button onClick={proceed} className="full-button">{request ? "Continue securely" : t("proceed")}<ArrowRight size={17} /></Button><p className="inline-demo-note"><LockKeyhole size={14} /> This is a simulated demo flow.</p></div>;
 }
 function RiskPage() {
   const { data, t, continueVerification, navigate, blockTransaction } = useApp(); const [analyzing, setAnalyzing] = useState(true); const [expanded, setExpanded] = useState(false);
@@ -349,7 +604,7 @@ function BiometricPage() {
 function ResultPage({ status }: { status: "success" | "blocked" | "request" }) {
   const { data, navigate, setToast } = useApp(); const location = useLocation(); const id = location.pathname.split("/").pop(); const tx = data.transactions.find((x: Transaction) => x.id === id) ?? (status === "blocked" ? data.transactions.find((x: Transaction) => x.status === "blocked") : null); const [receipt, setReceipt] = useState(false); const [copied, setCopied] = useState(false);
   if (status === "blocked") return <div className="narrow-page result-page"><div className="result-icon blocked-result"><ShieldAlert size={35} /></div><span className="eyebrow">SECURITY PROTECTION ACTIVATED</span><h1>Transaction blocked</h1><p className="result-lead">SecurePay stopped this transaction to protect your demo account.</p><div className="blocked-summary"><div><small>AMOUNT</small><b>{money(tx?.amount ?? 0)}</b></div><div><small>TO</small><b>{tx?.receiver ?? "Unknown Recipient"}</b></div><div><small>RISK SCORE</small><b className="critical-text">{tx?.riskScore ?? 0} / 100</b></div></div><div className="blocked-reasons"><b>Signals detected</b>{(tx?.riskFactors ?? []).map(f => <span key={f.label}><ShieldAlert size={15} />{translateRiskFactor(f.label, data.language)}</span>)}</div><Button onClick={() => navigate("/security")} className="full-button">Review security<ArrowRight size={17} /></Button><Button onClick={() => navigate("/")} variant="outline" className="full-button secondary-cta">Go to Home</Button></div>;
-  const request = status === "request"; return <div className="narrow-page result-page"><div className={`result-icon ${request ? "request-result" : "success-result"}`}>{request ? <ArrowUpRight size={37} /> : <Check size={40} />}</div><span className="eyebrow">{request ? "REQUEST SENT" : "PAYMENT COMPLETE"}</span><h1>{request ? "Payment request sent" : "Payment Successful"}</h1><p className="result-lead">{request ? `Your request was sent to ${tx?.receiver ?? "your recipient"}.` : `Your payment to ${tx?.receiver ?? "your recipient"} is complete.`}</p><strong className="result-amount">{money(tx?.amount ?? 0)}</strong><div className="result-detail-card"><div><span>{request ? "Requested from" : "Paid to"}</span><b>{tx?.receiver}</b></div><div><span>UPI ID</span><b>{tx?.receiverUpi}</b></div><div><span>Transaction ID</span><b className="mono">{tx?.id ?? "—"}</b></div><div><span>Date & time</span><b>{tx ? new Date(tx.timestamp).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" }) : "—"}</b></div><div><span>Risk check</span><b><span className={`risk-chip ${tx?.riskLevel.toLowerCase()}`}>{tx?.riskLevel ?? "LOW"} · {tx?.riskScore ?? 0}</span></b></div></div><div className="result-actions"><Button onClick={() => navigate("/")} className="full-button">Done</Button><Button onClick={() => navigate(`/transaction/${tx?.id}`)} variant="outline" className="full-button">View transaction</Button><button className="text-button" onClick={() => setReceipt(true)}>Share receipt<ArrowRight size={15} /></button></div>{receipt && <div className="modal-backdrop" onClick={() => setReceipt(false)}><div className="receipt-modal" onClick={e => e.stopPropagation()}><button className="modal-close" onClick={() => setReceipt(false)}><X size={18} /></button><div className="receipt-brand"><Shield size={17} />SecurePay <small>DEMO RECEIPT</small></div><div className="receipt-check"><Check size={22} /></div><h2>{request ? "Request sent" : "Payment successful"}</h2><strong>{money(tx?.amount ?? 0)}</strong><div className="receipt-line"><span>{request ? "Requested from" : "Paid to"}</span><b>{tx?.receiver}</b></div><div className="receipt-line"><span>Transaction ID</span><b>{tx?.id}</b></div><div className="receipt-line"><span>Date</span><b>{tx ? new Date(tx.timestamp).toLocaleString("en-IN") : ""}</b></div><div className="receipt-actions"><Button variant="outline" onClick={() => { navigator.clipboard?.writeText(`SecurePay demo receipt · ${money(tx?.amount ?? 0)} · ${tx?.id}`); setCopied(true); setToast("Receipt copied"); }}>{copied ? <Check size={16} /> : <Copy size={16} />}{copied ? "Copied" : "Copy receipt"}</Button><Button onClick={() => window.print()}><Download size={16} />Print / save</Button></div></div></div>}</div>;
+  const request = status === "request"; return <div className="narrow-page result-page"><div className={`result-icon ${request ? "request-result" : "success-result"}`}>{request ? <ArrowUpRight size={37} /> : <Check size={40} />}</div><span className="eyebrow">{request ? "DEMO REQUEST" : "SIMULATION ONLY"}</span><h1>{request ? "Demo request created" : "Demo payment simulation complete"}</h1><p className="result-lead">{request ? `A simulated request was created for ${tx?.receiver ?? "your recipient"}. No external request was sent.` : `A simulated transaction was recorded for ${tx?.receiver ?? "your recipient"}. No funds were transferred.`}</p><strong className="result-amount">{money(tx?.amount ?? 0)}</strong><div className="result-detail-card"><div><span>{request ? "Requested from" : "Simulated recipient"}</span><b>{tx?.receiver}</b></div><div><span>UPI ID</span><b>{tx?.receiverUpi}</b></div><div><span>Transaction ID</span><b className="mono">{tx?.id ?? "—"}</b></div><div><span>Date & time</span><b>{tx ? new Date(tx.timestamp).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" }) : "—"}</b></div><div><span>Risk check</span><b><span className={`risk-chip ${tx?.riskLevel.toLowerCase()}`}>{tx?.riskLevel ?? "LOW"} · {tx?.riskScore ?? 0}</span></b></div></div><div className="result-actions"><Button onClick={() => navigate("/")} className="full-button">Done</Button><Button onClick={() => navigate(`/transaction/${tx?.id}`)} variant="outline" className="full-button">View transaction</Button><button className="text-button" onClick={() => setReceipt(true)}>Share demo receipt<ArrowRight size={15} /></button></div>{receipt && <div className="modal-backdrop" onClick={() => setReceipt(false)}><div className="receipt-modal" onClick={e => e.stopPropagation()}><button className="modal-close" onClick={() => setReceipt(false)}><X size={18} /></button><div className="receipt-brand"><Shield size={17} />SecurePay <small>DEMO RECEIPT</small></div><div className="receipt-check"><Check size={22} /></div><h2>{request ? "Demo request" : "Demo payment simulation"}</h2><strong>{money(tx?.amount ?? 0)}</strong><div className="receipt-line"><span>{request ? "Requested from" : "Simulated recipient"}</span><b>{tx?.receiver}</b></div><div className="receipt-line"><span>Transaction ID</span><b>{tx?.id}</b></div><div className="receipt-line"><span>Date</span><b>{tx ? new Date(tx.timestamp).toLocaleString("en-IN") : ""}</b></div><p className="inline-demo-note">No funds were transferred.</p><div className="receipt-actions"><Button variant="outline" onClick={() => { navigator.clipboard?.writeText(`SecurePay demo receipt · ${money(tx?.amount ?? 0)} · ${tx?.id}`); setCopied(true); setToast("Demo receipt copied"); }}>{copied ? <Check size={16} /> : <Copy size={16} />}{copied ? "Copied" : "Copy receipt"}</Button><Button onClick={() => window.print()}><Download size={16} />Print / save</Button></div></div></div>}</div>;
 }
 
 function ReportModal({ tx, open, onClose, onSubmit }: { tx: Transaction | null; open: boolean; onClose: () => void; onSubmit: (reason: string) => void }) {
@@ -363,10 +618,10 @@ function ReportModal({ tx, open, onClose, onSubmit }: { tx: Transaction | null; 
 }
 
 function HistoryPage() {
-  const { data, t, navigate } = useApp(); const [filter, setFilter] = useState("all"); const [search, setSearch] = useState(""); const [riskFilter, setRiskFilter] = useState("all"); const [dateFilter, setDateFilter] = useState("all"); const [amountFilter, setAmountFilter] = useState("all");
+  const { data, database, t, navigate } = useApp(); const [filter, setFilter] = useState("all"); const [search, setSearch] = useState(""); const [riskFilter, setRiskFilter] = useState("all"); const [dateFilter, setDateFilter] = useState("all"); const [amountFilter, setAmountFilter] = useState("all");
   const tabs = ["all", "sent", "received", "blocked", "pending"];
   const filtered = data.transactions.filter((tx: Transaction) => { const age = Date.now() - new Date(tx.timestamp).getTime(); const dateMatch = dateFilter === "all" || dateFilter === "today" && age < 86400000 || dateFilter === "week" && age < 604800000; const amountMatch = amountFilter === "all" || amountFilter === "under-1k" && tx.amount < 1000 || amountFilter === "1k-5k" && tx.amount >= 1000 && tx.amount <= 5000 || amountFilter === "over-5k" && tx.amount > 5000; return (filter === "all" || tx.status === filter || tx.type === filter) && (riskFilter === "all" || tx.riskLevel.toLowerCase() === riskFilter) && dateMatch && amountMatch && `${tx.receiver} ${tx.sender} ${tx.receiverUpi}`.toLowerCase().includes(search.toLowerCase()); });
-  return <div><PageHeading title={t("history")} subtitle="A clear record of your demo payments and requests." /><div className="history-controls"><div className="history-tabs">{tabs.map(tab => <button key={tab} className={filter === tab ? "active" : ""} onClick={() => setFilter(tab)}>{t(tab)}</button>)}</div><div className="history-filters"><div className="search-box"><Search size={17} /><input value={search} onChange={e => setSearch(e.target.value)} placeholder={t("search")} /></div><select value={dateFilter} onChange={e => setDateFilter(e.target.value)} aria-label="Filter by date"><option value="all">Any date</option><option value="today">Last 24 hours</option><option value="week">Last 7 days</option></select><select value={amountFilter} onChange={e => setAmountFilter(e.target.value)} aria-label="Filter by amount"><option value="all">Any amount</option><option value="under-1k">Under ₹1,000</option><option value="1k-5k">₹1,000–₹5,000</option><option value="over-5k">Over ₹5,000</option></select><select value={riskFilter} onChange={e => setRiskFilter(e.target.value)} aria-label="Filter by risk"><option value="all">All risk levels</option><option value="low">Low risk</option><option value="medium">Medium risk</option><option value="high">High risk</option><option value="critical">Critical risk</option></select></div></div>{filtered.length ? <div className="history-list">{filtered.map((tx: Transaction) => <TransactionRow key={tx.id} tx={tx} onClick={() => navigate(`/transaction/${tx.id}`)} />)}</div> : <EmptyState icon={<FileClock />} title="No transactions found" description="Try a different filter or start a demo payment." action={() => navigate("/send")} actionText="Send money" />}</div>;
+  return <div><DemoDatabaseNotice /><PageHeading title={t("history")} subtitle={database ? "Transaction history loaded from the demo database." : "A clear record of your demo payments and requests."} /><div className="history-controls"><div className="history-tabs">{tabs.map(tab => <button key={tab} className={filter === tab ? "active" : ""} onClick={() => setFilter(tab)}>{t(tab)}</button>)}</div><div className="history-filters"><div className="search-box"><Search size={17} /><input value={search} onChange={e => setSearch(e.target.value)} placeholder={t("search")} /></div><select value={dateFilter} onChange={e => setDateFilter(e.target.value)} aria-label="Filter by date"><option value="all">Any date</option><option value="today">Last 24 hours</option><option value="week">Last 7 days</option></select><select value={amountFilter} onChange={e => setAmountFilter(e.target.value)} aria-label="Filter by amount"><option value="all">Any amount</option><option value="under-1k">Under ₹1,000</option><option value="1k-5k">₹1,000–₹5,000</option><option value="over-5k">Over ₹5,000</option></select><select value={riskFilter} onChange={e => setRiskFilter(e.target.value)} aria-label="Filter by risk"><option value="all">All risk levels</option><option value="low">Low risk</option><option value="medium">Medium risk</option><option value="high">High risk</option><option value="critical">Critical risk</option></select></div></div>{filtered.length ? <div className="history-list">{filtered.map((tx: Transaction) => <TransactionRow key={tx.id} tx={tx} onClick={() => navigate(`/transaction/${tx.id}`)} />)}</div> : <EmptyState icon={<FileClock />} title="No transactions found" description="Try a different filter or start a demo payment." action={() => navigate("/send")} actionText="Send money" />}</div>;
 }
 function TransactionDetail() { const { data, navigate, t, notify, event, update } = useApp(); const location = useLocation(); const id = location.pathname.split("/").pop(); const tx = data.transactions.find((x: Transaction) => x.id === id); const [reportOpen, setReportOpen] = useState(false);
   if (!tx) return <div><PageHeading back title="Transaction not found" /><Button onClick={() => navigate("/history")}>Back to history</Button></div>;
@@ -379,7 +634,7 @@ function TransactionDetail() { const { data, navigate, t, notify, event, update 
     event(eventTitle, `Transaction ${tx.id} reported by user • ${money(tx.amount)} to ${tx.receiver} • Reason: ${reason} • Status: ${tx.status.toUpperCase()}`, tx.riskScore, tx.id);
     setReportOpen(false);
   };
-  return <div className="narrow-page"><PageHeading back title={t("details")} /><div className="detail-hero"><span className={`transaction-icon large ${tx.status === "blocked" ? "blocked" : tx.type === "received" ? "received" : "sent"}`}>{tx.status === "blocked" ? <ShieldAlert /> : tx.type === "received" ? <ArrowDownLeft /> : <ArrowUpRight />}</span><h2>{tx.type === "received" ? "+" : "−"}{money(tx.amount)}</h2><p>{tx.status === "blocked" ? "Transaction blocked" : tx.status === "pending" ? "Request pending" : tx.type === "received" ? `Received from ${tx.sender}` : `Paid to ${tx.receiver}`}</p><span className={`status-chip ${tx.status}`}>{tx.status}</span>{tx.reported && <span className="status-chip" style={{ marginTop: 8 }}>REPORTED</span>}</div><div className="detail-card"><DetailLine label="Amount" value={money(tx.amount)} /><DetailLine label="Recipient" value={tx.receiver} /><DetailLine label="UPI ID" value={tx.receiverUpi} /><DetailLine label="Date & time" value={new Date(tx.timestamp).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" })} /><DetailLine label="Transaction ID" value={tx.id} mono /><DetailLine label="Risk" value={tx.riskLevel} /><DetailLine label="Risk Score" value={`${tx.riskScore} / 100`} /><DetailLine label="Status" value={tx.status.toUpperCase()} /></div>{tx.riskFactors.length > 0 && <div className="detail-card"><h3>Risk factors</h3>{tx.riskFactors.map(f => <DetailLine key={f.label} label={f.label} value={`+${f.points}`} />)}</div>}<div className="detail-card"><h3>Verification</h3>{["PIN", "OTP", "Fingerprint"].map(step => <DetailLine key={step} label={step} value={verificationStatus(step)} />)}</div>{tx.riskLevel === "HIGH" || tx.riskLevel === "CRITICAL" ? <div className="detail-card"><h3>Security review</h3><DetailLine label="Risk" value={`${tx.riskLevel} • ${tx.riskScore}`} /><DetailLine label="Verification methods" value={tx.verificationRequired.join(" + ") || "—"} /><DetailLine label="Report status" value={tx.reported ? `${tx.reportReason} (${new Date(tx.reportedAt ?? tx.timestamp).toLocaleString("en-IN", { dateStyle: "short", timeStyle: "short" })})` : "Not reported"} /></div> : null}<div className="result-actions"><Button variant="outline" className="full-button" onClick={() => navigate("/security/activity")}>Review Security</Button><Button variant="outline" className="full-button" onClick={() => setReportOpen(true)}>{tx.reported ? "Report Transaction" : "Report Transaction"}</Button><Button variant="outline" className="full-button" onClick={() => navigate("/history")}>Back to history</Button></div>{reportOpen && <ReportModal tx={tx} open={reportOpen} onClose={() => setReportOpen(false)} onSubmit={submitReport} />}</div>; }
+  return <div className="narrow-page"><PageHeading back title={t("details")} /><div className="detail-hero"><span className={`transaction-icon large ${tx.status === "blocked" ? "blocked" : tx.type === "received" ? "received" : "sent"}`}>{tx.status === "blocked" ? <ShieldAlert /> : tx.type === "received" ? <ArrowDownLeft /> : <ArrowUpRight />}</span><h2>{tx.type === "received" ? "+" : "−"}{money(tx.amount)}</h2><p>{tx.status === "blocked" ? "Transaction blocked" : tx.status === "pending" ? "Request pending" : tx.type === "received" ? `Received from ${tx.sender}` : tx.note.includes("No funds were transferred.") ? `Simulated payment to ${tx.receiver}; no funds were transferred` : `Paid to ${tx.receiver}`}</p><span className={`status-chip ${tx.status}`}>{tx.status}</span>{tx.reported && <span className="status-chip" style={{ marginTop: 8 }}>REPORTED</span>}</div><div className="detail-card"><DetailLine label="Amount" value={money(tx.amount)} /><DetailLine label="Recipient" value={tx.receiver} /><DetailLine label="UPI ID" value={tx.receiverUpi} /><DetailLine label="Date & time" value={new Date(tx.timestamp).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" })} /><DetailLine label="Transaction ID" value={tx.id} mono /><DetailLine label="Risk" value={tx.riskLevel} /><DetailLine label="Risk Score" value={`${tx.riskScore} / 100`} /><DetailLine label="Status" value={tx.status.toUpperCase()} /></div>{tx.riskFactors.length > 0 && <div className="detail-card"><h3>Risk factors</h3>{tx.riskFactors.map(f => <DetailLine key={f.label} label={f.label} value={`+${f.points}`} />)}</div>}<div className="detail-card"><h3>Verification</h3>{["PIN", "OTP", "Fingerprint"].map(step => <DetailLine key={step} label={step} value={verificationStatus(step)} />)}</div>{tx.riskLevel === "HIGH" || tx.riskLevel === "CRITICAL" ? <div className="detail-card"><h3>Security review</h3><DetailLine label="Risk" value={`${tx.riskLevel} • ${tx.riskScore}`} /><DetailLine label="Verification methods" value={tx.verificationRequired.join(" + ") || "—"} /><DetailLine label="Report status" value={tx.reported ? `${tx.reportReason} (${new Date(tx.reportedAt ?? tx.timestamp).toLocaleString("en-IN", { dateStyle: "short", timeStyle: "short" })})` : "Not reported"} /></div> : null}<div className="result-actions"><Button variant="outline" className="full-button" onClick={() => navigate("/security/activity")}>Review Security</Button><Button variant="outline" className="full-button" onClick={() => setReportOpen(true)}>{tx.reported ? "Report Transaction" : "Report Transaction"}</Button><Button variant="outline" className="full-button" onClick={() => navigate("/history")}>Back to history</Button></div>{reportOpen && <ReportModal tx={tx} open={reportOpen} onClose={() => setReportOpen(false)} onSubmit={submitReport} />}</div>; }
 function DetailLine({ label, value, mono = false }: any) { const { data } = useApp(); return <div className="detail-line"><span>{translateRiskFactor(label, data.language)}</span><b className={mono ? "mono" : ""}>{value}</b></div>; }
 function EmptyState({ icon, title, description, action, actionText }: any) { return <div className="empty-state"><span>{icon}</span><h3>{title}</h3><p>{description}</p>{action && <Button variant="outline" onClick={action}>{actionText}</Button>}</div>; }
 
@@ -391,7 +646,7 @@ function ScanPage() {
 }
 
 function SecurityPage() {
-  const { data, t, navigate, startTest, event, setToast } = useApp();
+  const { data, database, refreshDatabase, t, navigate, startTest, event, setToast } = useApp();
   const [passwordCheckerOpen, setPasswordCheckerOpen] = useState(false);
   const [phishingCheckerOpen, setPhishingCheckerOpen] = useState(false);
   const cyberTrustSignals = {
@@ -411,38 +666,94 @@ function SecurityPage() {
   ];
 
   return <div>
+    <DemoDatabaseNotice />
     <div className="security-header"><div><span className="eyebrow">SECUREPAY PROTECTION</span><h1>{t("securityCenter")}</h1><p>{t("protected")}</p></div><div className="security-status-icon"><ShieldCheck size={30} /></div></div>
-    <CyberTrustScore signals={cyberTrustSignals} t={t} onViewActivity={() => navigate("/security/activity")} />
+    <CyberTrustScore signals={cyberTrustSignals} scoreOverride={database?.securityScores[0]?.overall_score} t={t} onViewActivity={() => navigate("/security/activity")} />
     <div className="protection-grid">{protections.map(c => <div className="protection-card" key={c.title}><div className="protection-card-top"><span>{c.icon}</span><i /></div><b>{c.title}</b><small>{c.info}</small><span className="protection-active">{c.state}</span></div>)}</div>
     <div className="security-tools-row">
       <section className="password-checker-section">
         {!passwordCheckerOpen && <Button variant="outline" onClick={() => setPasswordCheckerOpen(true)}><LockKeyhole size={17} />{t("passwordCheckerOpen")}</Button>}
-        {passwordCheckerOpen && <PasswordStrengthChecker t={t} onClose={() => setPasswordCheckerOpen(false)} />}
+        {passwordCheckerOpen && <PasswordStrengthChecker
+          t={t}
+          onClose={() => setPasswordCheckerOpen(false)}
+          onChecked={database ? async record => {
+            await recordDemoPasswordCheck({ ...record, idempotencyKey: crypto.randomUUID() });
+            await refreshDatabase();
+          } : undefined}
+        />}
       </section>
       <section className="phishing-checker-section">
         {!phishingCheckerOpen && <Button variant="outline" onClick={() => setPhishingCheckerOpen(true)}><ShieldAlert size={17} />{t("phishingTitle")}</Button>}
-        {phishingCheckerOpen && <PhishingCheck t={t} onClose={() => setPhishingCheckerOpen(false)} onIgnore={level => { const at = new Date().toISOString(); const category = t(`phishingResult${level[0].toUpperCase()}${level.slice(1)}`); event("Phishing warning ignored", `${category} warning ignored at ${at}.`); setToast(t("phishingIgnoreConfirmation")); }} />}
+        {phishingCheckerOpen && <PhishingCheck
+          t={t}
+          onClose={() => setPhishingCheckerOpen(false)}
+          onChecked={database ? async record => {
+            await recordDemoPhishingCheck({ ...record, idempotencyKey: crypto.randomUUID() });
+            await refreshDatabase();
+          } : undefined}
+          onIgnore={level => { const at = new Date().toISOString(); const category = t(`phishingResult${level[0].toUpperCase()}${level.slice(1)}`); event("Phishing warning ignored", `${category} warning ignored at ${at}.`); setToast(t("phishingIgnoreConfirmation")); }}
+        />}
       </section>
     </div>
+    {database && <section className="security-events-section">
+      <SectionHeading title="Saved security data" />
+      {database.securityScores[0] && <div className="detail-card">
+        <h3>Latest database score</h3>
+        <DetailLine label="Overall" value={`${database.securityScores[0].overall_score}/100`} />
+        <DetailLine label="Transaction" value={`${database.securityScores[0].transaction_score}/100`} />
+        <DetailLine label="Account security" value={`${database.securityScores[0].account_security_score}/100`} />
+        <DetailLine label="Password" value={`${database.securityScores[0].password_score}/100`} />
+        <DetailLine label="Phishing" value={`${database.securityScores[0].phishing_score}/100`} />
+        <DetailLine label="Suspicious activity" value={`${database.securityScores[0].suspicious_activity_score}/100`} />
+      </div>}
+      <div className="detail-card">
+        <h3>Recent verification checks</h3>
+        {database.securityChecks.slice(0, 5).map(check => <DetailLine key={check.id} label={`${check.check_type} · ${relativeTime(check.created_at)}`} value={`${check.result}${check.risk_score === null ? "" : ` · risk ${check.risk_score}`}`} />)}
+        {!database.securityChecks.length && <p>No saved checks yet.</p>}
+      </div>
+      <div className="detail-card">
+        <h3>Password-check history</h3>
+        {database.passwordChecks.slice(0, 3).map(check => <DetailLine key={check.id} label={relativeTime(check.checked_at)} value={`${check.strength} · ${check.score}/100`} />)}
+        {!database.passwordChecks.length && <p>No saved password checks yet.</p>}
+      </div>
+      <div className="detail-card">
+        <h3>Phishing-check history</h3>
+        {database.phishingChecks.slice(0, 3).map(check => <DetailLine key={check.id} label={`${check.input_type} · ${relativeTime(check.checked_at)}`} value={`${check.risk_level} · ${check.risk_score}/100`} />)}
+        {!database.phishingChecks.length && <p>No saved phishing checks yet.</p>}
+      </div>
+    </section>}
     <section className="security-events-section"><SectionHeading title={t("recentEvents")} action={t("fullActivity")} onClick={() => navigate("/security/activity")} /><div className="security-event-list">{data.events.slice(0, 5).map((ev: SecurityEvent) => <button key={ev.id} className="security-event-row" onClick={() => ev.transactionId ? navigate(`/transaction/${ev.transactionId}`) : navigate("/security/activity")}><span><ShieldCheck size={16} /></span><div><b>{ev.type}</b><small>{ev.description}</small></div><time>{relativeTime(ev.timestamp)}</time></button>)}</div></section>
     <section className="demo-controls-inline"><div><Sparkles size={17} /><div><b>{t("riskEngineTitle")}</b><small>{t("riskScenarioDescription")}</small></div></div><Button variant="outline" onClick={() => navigate("/settings")}>{t("openSettings")}<ArrowRight size={15} /></Button></section>
     <DemoDisclaimer />
   </div>;
 }
-function SecurityActivity() { const { data, navigate } = useApp(); return <div><PageHeading back title="Security activity" subtitle="A local timeline of risk checks and verification events." /><div className="activity-timeline">{data.events.length ? data.events.map((ev: SecurityEvent) => <button className="timeline-item" key={ev.id} onClick={() => navigate(ev.transactionId ? `/transaction/${ev.transactionId}` : "/notifications")}><span className="timeline-icon"><ShieldCheck size={16} /></span><div><small>{new Date(ev.timestamp).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })}</small><b>{ev.type}</b><p>{ev.description}{ev.riskScore > 0 ? ` · Risk score ${ev.riskScore}` : ""}</p></div><ChevronRight size={16} /></button>) : <EmptyState icon={<Activity />} title="No security activity yet" description="Complete a payment to see its risk check here." />}</div><div className="sample-timeline"><b>Example payment timeline</b><div><span>10:42 AM</span><p>Payment initiated · ₹2,000</p></div><div><span>10:42 AM</span><p>Risk analysis completed · Score 32</p></div><div><span>10:43 AM</span><p>UPI PIN and OTP verified</p></div><div><span>10:43 AM</span><p>Payment successful</p></div></div></div>; }
+function SecurityActivity() { const { data, database, navigate } = useApp(); return <div><PageHeading back title="Security activity" subtitle={database ? "Activity timeline loaded from the demo database." : "A local timeline of risk checks and verification events."} /><div className="activity-timeline">{data.events.length ? data.events.map((ev: SecurityEvent) => <button className="timeline-item" key={ev.id} onClick={() => navigate(ev.transactionId ? `/transaction/${ev.transactionId}` : "/notifications")}><span className="timeline-icon"><ShieldCheck size={16} /></span><div><small>{new Date(ev.timestamp).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })}</small><b>{ev.type}</b><p>{ev.description}{ev.riskScore > 0 ? ` · Risk score ${ev.riskScore}` : ""}</p></div><ChevronRight size={16} /></button>) : <EmptyState icon={<Activity />} title="No security activity yet" description="Complete a payment to see its risk check here." />}</div>{!database && <div className="sample-timeline"><b>Example payment timeline (illustrative)</b><div><span>10:42 AM</span><p>Payment initiated · ₹2,000</p></div><div><span>10:42 AM</span><p>Risk analysis completed · Score 32</p></div><div><span>10:43 AM</span><p>UPI PIN and OTP verified</p></div><div><span>10:43 AM</span><p>Payment successful</p></div></div>}</div>; }
 
 function NotificationsPage() {
-  const { data, update, markRead, t, navigate, setToast } = useApp(); const [filter, setFilter] = useState("All"); const types = ["All", "Payments", "Security", "System"];
-  const entries = data.notifications.filter((n: Notice) => filter === "All" || filter === "Payments" && ["Payment Successful", "Payment Received", "Payment Request", "High-risk payment completed"].includes(n.type) || filter === "Security" && ["Security Alert", "Transaction Blocked", "Critical transaction blocked", "OTP Verification", "New Recipient"].includes(n.type) || filter === "System" && n.type === "System Update");
-  return <div><PageHeading title={t("notifications")} subtitle={`${data.notifications.filter((n: Notice) => !n.read).length} unread updates`} /><div className="notification-actions"><div className="filter-pills">{types.map(type => <button key={type} className={filter === type ? "active" : ""} onClick={() => setFilter(type)}>{type}</button>)}</div><div><button onClick={() => update({ notifications: data.notifications.map((n: Notice) => ({ ...n, read: true })) })}>{t("markRead")}</button><button onClick={() => { update({ notifications: [] }); setToast("Notifications cleared"); }}>{t("clear")}</button></div></div><div className="notifications-list">{entries.length ? entries.map((n: Notice) => <button key={n.id} className={`notification-row ${n.read ? "read" : "unread"}`} onClick={() => { markRead(n.id); const tx = n.transactionId ? data.transactions.find((x: Transaction) => x.id === n.transactionId) : data.transactions.find((x: Transaction) => n.message.includes(x.id) || n.message.includes(x.receiver)); if (tx) navigate(`/transaction/${tx.id}`); }}><span className={`notification-icon ${n.type.toLowerCase().includes("security") || n.type.toLowerCase().includes("blocked") ? "alert" : ""}`}>{n.type.toLowerCase().includes("security") || n.type.toLowerCase().includes("blocked") ? <ShieldAlert size={17} /> : <Bell size={17} />}</span><span className="notification-copy"><b>{n.title}</b><small>{n.message}</small><time>{relativeTime(n.timestamp)}</time></span>{!n.read && <i className="unread-dot" />}</button>) : <EmptyState icon={<Bell />} title="You're all caught up" description="New payment and security updates will appear here." />}</div></div>;
+  const { data, database, update, markRead, markAllRead, t, navigate, setToast } = useApp(); const [filter, setFilter] = useState("All"); const types = ["All", "Payments", "Security", "System"];
+  const entries = data.notifications.filter((n: Notice) => filter === "All" || filter === "Payments" && ["Payment Successful", "Payment Received", "Payment Request", "High-risk payment completed", "High-risk simulated transaction"].includes(n.type) || filter === "Security" && (database !== null || ["Security Alert", "Transaction Blocked", "Critical transaction blocked", "OTP Verification", "New Recipient"].includes(n.type)) || filter === "System" && n.type === "System Update");
+  return <div><DemoDatabaseNotice /><PageHeading title={t("notifications")} subtitle={`${data.notifications.filter((n: Notice) => !n.read).length} unread updates`} /><div className="notification-actions"><div className="filter-pills">{types.map(type => <button key={type} className={filter === type ? "active" : ""} onClick={() => setFilter(type)}>{type}</button>)}</div><div><button onClick={() => void markAllRead()}>{t("markRead")}</button>{!database && <button onClick={() => { update({ notifications: [] }); setToast("Notifications cleared"); }}>{t("clear")}</button>}</div></div><div className="notifications-list">{entries.length ? entries.map((n: Notice) => <button key={n.id} className={`notification-row ${n.read ? "read" : "unread"}`} onClick={() => { void markRead(n.id); const tx = n.transactionId ? data.transactions.find((x: Transaction) => x.id === n.transactionId) : data.transactions.find((x: Transaction) => n.message.includes(x.id) || n.message.includes(x.receiver)); if (tx) navigate(`/transaction/${tx.id}`); }}><span className={`notification-icon ${n.type.toLowerCase().includes("security") || n.type.toLowerCase().includes("blocked") ? "alert" : ""}`}>{n.type.toLowerCase().includes("security") || n.type.toLowerCase().includes("blocked") ? <ShieldAlert size={17} /> : <Bell size={17} />}</span><span className="notification-copy"><b>{n.title}</b>{n.severity && <small>Severity: {n.severity}</small>}<small>{n.message}</small><time>{relativeTime(n.timestamp)}</time></span>{!n.read && <i className="unread-dot" />}</button>) : <EmptyState icon={<Bell />} title="You're all caught up" description="New payment and security updates will appear here." />}</div></div>;
 }
-function BalanceAuthPage({ initialMethod }: { initialMethod?: "pin" | "fingerprint" }) { const { data, navigate, unlockBalance, t } = useApp(); const [method, setMethod] = useState<"pin" | "fingerprint" | null>(initialMethod ?? null); const [pin, setPin] = useState(""); const [error, setError] = useState(""); const [scanning, setScanning] = useState(false); const [verified, setVerified] = useState(false); const verifyPin = (value: string) => { if (value === "123456") unlockBalance(); else { setPin(""); setError(t("invalidDemoPin")); } }; const addDigit = (key: string) => { if (key === "back") { setPin(pin.slice(0, -1)); return; } if (key === "clear") { setPin(""); return; } if (pin.length >= 6) return; const value = pin + key; setPin(value); if (value.length === 6) setTimeout(() => verifyPin(value), 120); }; const startFingerprint = () => { setScanning(true); setTimeout(() => { setVerified(true); setTimeout(unlockBalance, 700); }, 1300); }; return <div className="narrow-page verify-page"><PageHeading back title="Check Balance" subtitle="Confirm it’s you before showing account information." />{!method ? <div className="balance-auth-options"><div className="pin-security"><span><LockKeyhole size={18} /></span><div><b>Secure Demo Bank ···· 4521</b><small>Your balance stays hidden until verification succeeds.</small></div></div><Button className="full-button" onClick={() => navigate("/balance/auth/pin")}><LockKeyhole size={17} />Use PIN</Button><Button variant="outline" className="full-button" onClick={() => navigate("/balance/auth/fingerprint")}><Fingerprint size={18} />Use Fingerprint</Button></div> : method === "pin" ? <div className="balance-pin-auth"><div className="pin-security"><span><LockKeyhole size={18} /></span><div><b>Balance unlock</b><small>Enter your 6-digit demo PIN.</small></div></div><div className="pin-dots">{Array.from({ length: 6 }, (_, i) => <i key={i} className={i < pin.length ? "filled" : ""} />)}</div>{error && <p className="field-error centered">{error}</p>}<div className="pin-keypad">{["1","2","3","4","5","6","7","8","9","back","0","clear"].map(key => <button key={key} onClick={() => addDigit(key)} aria-label={key === "back" ? "Backspace" : key === "clear" ? "Clear" : key}>{key === "back" ? <ArrowLeft size={20} /> : key === "clear" ? <X size={19} /> : key}</button>)}</div><p className="demo-credential"><span>Demo PIN</span><b>123456</b><button onClick={() => verifyPin("123456")}>Use demo PIN</button></p></div> : <div className="biometric-page balance-biometric"><div className={`fingerprint-ring ${scanning ? "scan-active" : ""} ${verified ? "is-verified" : ""}`}>{verified ? <Check size={42} /> : <Fingerprint size={48} />}{scanning && !verified && <span />}</div><h2>{verified ? "Fingerprint verified" : scanning ? "Scanning..." : "Verify to check balance"}</h2><p>This simulated fingerprint check does not access device hardware.</p>{!scanning && <Button className="full-button" onClick={startFingerprint}><Fingerprint size={18} />Use Fingerprint</Button>}</div>}<button className="text-button" onClick={() => navigate("/")}>Cancel</button></div>; }
-function BalancePage() { const { data, update, notify, setToast, navigate, balanceShown, setBalanceShown } = useApp(); const [added, setAdded] = useState(0); return <div className="narrow-page"><PageHeading back title="Balance & bank" subtitle="Your simulated demo account details." /><div className="account-balance-card"><span>AVAILABLE DEMO BALANCE</span><strong>{balanceShown ? money(data.balance) : "₹ ••••••"}</strong><div><CreditCard size={17} /><b>Secure Demo Bank</b><small>•••• 4521 · Primary account</small></div><button className="balance-hide-button" onClick={() => balanceShown ? setBalanceShown(false) : navigate("/balance/verify")}>{balanceShown ? <><EyeOff size={15} />Hide Balance</> : <><Eye size={15} />Check Balance</>}</button></div><div className="balance-details-card"><DetailLine label="Account holder" value="Ritu Ratnaparkhi" /><DetailLine label="Bank account" value="XXXX XXXX 4521" /><DetailLine label="UPI ID" value="ritu@securepay" /><DetailLine label="Account type" value="Demo savings" /></div><h2 className="subsection-title">Add demo funds</h2><p className="muted-copy">This only changes the local prototype balance.</p><div className="amount-chips add-funds-chips">{[500, 1000, 5000, 10000].map(x => <button key={x} className={added === x ? "selected" : ""} onClick={() => setAdded(x)}>+₹{x.toLocaleString("en-IN")}</button>)}</div><Button className="full-button" disabled={!added} onClick={() => { update({ balance: data.balance + added }); notify("System Update", "Demo funds added", `${money(added)} was added to your simulated balance.`); setToast(`${money(added)} added to demo balance`); setAdded(0); }}>Add funds to demo account<Plus size={16} /></Button><DemoDisclaimer /></div>; }
+function BalanceAuthPage({ initialMethod }: { initialMethod?: "pin" | "fingerprint" }) { const { data, navigate, unlockBalance, t } = useApp(); const [method, setMethod] = useState<"pin" | "fingerprint" | null>(initialMethod ?? null); const [pin, setPin] = useState(""); const [error, setError] = useState(""); const [scanning, setScanning] = useState(false); const [verified, setVerified] = useState(false); useEffect(() => { setMethod(initialMethod ?? null); }, [initialMethod]); const verifyPin = (value: string) => { if (value === "123456") unlockBalance(); else { setPin(""); setError(t("invalidDemoPin")); } }; const addDigit = (key: string) => { if (key === "back") { setPin(pin.slice(0, -1)); return; } if (key === "clear") { setPin(""); return; } if (pin.length >= 6) return; const value = pin + key; setPin(value); if (value.length === 6) setTimeout(() => verifyPin(value), 120); }; const startFingerprint = () => { setScanning(true); setTimeout(() => { setVerified(true); setTimeout(unlockBalance, 700); }, 1300); }; return <div className="narrow-page verify-page"><PageHeading back title="Check Balance" subtitle="Confirm it’s you before showing account information." />{!method ? <div className="balance-auth-options"><div className="pin-security"><span><LockKeyhole size={18} /></span><div><b>{data.user.bankAccount}</b><small>Your balance stays hidden until verification succeeds.</small></div></div><Button className="full-button" onClick={() => navigate("/balance/auth/pin")}><LockKeyhole size={17} />Use PIN</Button><Button variant="outline" className="full-button" onClick={() => navigate("/balance/auth/fingerprint")}><Fingerprint size={18} />Use Fingerprint</Button></div> : method === "pin" ? <div className="balance-pin-auth"><div className="pin-security"><span><LockKeyhole size={18} /></span><div><b>Balance unlock</b><small>Enter your 6-digit demo PIN.</small></div></div><div className="pin-dots">{Array.from({ length: 6 }, (_, i) => <i key={i} className={i < pin.length ? "filled" : ""} />)}</div>{error && <p className="field-error centered">{error}</p>}<div className="pin-keypad">{["1","2","3","4","5","6","7","8","9","back","0","clear"].map(key => <button key={key} onClick={() => addDigit(key)} aria-label={key === "back" ? "Backspace" : key === "clear" ? "Clear" : key}>{key === "back" ? <ArrowLeft size={20} /> : key === "clear" ? <X size={19} /> : key}</button>)}</div><p className="demo-credential"><span>Demo PIN</span><b>123456</b><button onClick={() => verifyPin("123456")}>Use demo PIN</button></p></div> : <div className="biometric-page balance-biometric"><div className={`fingerprint-ring ${scanning ? "scan-active" : ""} ${verified ? "is-verified" : ""}`}>{verified ? <Check size={42} /> : <Fingerprint size={48} />}{scanning && !verified && <span />}</div><h2>{verified ? "Fingerprint verified" : scanning ? "Scanning..." : "Verify to check balance"}</h2><p>This simulated fingerprint check does not access device hardware.</p>{!scanning && <Button className="full-button" onClick={startFingerprint}><Fingerprint size={18} />Use Fingerprint</Button>}</div>}<button className="text-button" onClick={() => navigate("/")}>Cancel</button></div>; }
+function BalancePage() {
+  const { data, database, update, notify, setToast, navigate, balanceShown, setBalanceShown } = useApp();
+  const [added, setAdded] = useState(0);
+  return <div className="narrow-page">
+    <PageHeading back title="Balance & bank" subtitle="Your simulated demo account details." />
+    <DemoDatabaseNotice />
+    <div className="account-balance-card"><span>AVAILABLE DEMO BALANCE</span><strong>{balanceShown ? money(data.balance) : "₹ ••••••"}</strong><div><CreditCard size={17} /><b>{database?.accounts[0]?.bank_name ?? "Secure Demo Bank"}</b><small>{data.user.bankAccount.split("····")[1]?.trim() ?? "•••• 4521"} · Primary account</small></div><button className="balance-hide-button" onClick={() => balanceShown ? setBalanceShown(false) : navigate("/balance/verify")}>{balanceShown ? <><EyeOff size={15} />Hide Balance</> : <><Eye size={15} />Check Balance</>}</button></div>
+    <div className="balance-details-card"><DetailLine label="Account holder" value={data.user.name} /><DetailLine label="UPI ID" value={data.user.upiId || "Not available"} />{database?.accounts.map(account => <div key={account.id}><DetailLine label={`${account.bank_name} · ${account.account_type}`} value={`•••• ${account.account_number_last4} · ${account.status}`} />{balanceShown && <DetailLine label="Seeded demo balance" value={money(Number(account.balance))} />}</div>)}</div>
+    {database
+      ? <p className="inline-demo-note"><Shield size={14} /> Database balances are seeded examples and are not changed by simulated payments or local add-funds controls.</p>
+      : <><h2 className="subsection-title">Add demo funds</h2><p className="muted-copy">This only changes the local prototype balance.</p><div className="amount-chips add-funds-chips">{[500, 1000, 5000, 10000].map(x => <button key={x} className={added === x ? "selected" : ""} onClick={() => setAdded(x)}>+₹{x.toLocaleString("en-IN")}</button>)}</div><Button className="full-button" disabled={!added} onClick={() => { update({ balance: data.balance + added }); notify("System Update", "Demo funds added", `${money(added)} was added to your simulated balance.`); setToast(`${money(added)} added to demo balance`); setAdded(0); }}>Add funds to demo account<Plus size={16} /></Button></>}
+    <DemoDisclaimer />
+  </div>;
+}
 
-function ProfileDetails() { const { navigate, t } = useApp(); return <div className="narrow-page"><PageHeading back title={t("personalDetails")} subtitle="Your local demo profile information." /><div className="profile-card"><Avatar name="Ritu Ratnaparkhi" tone="deep" /><div><h2>Ritu Ratnaparkhi</h2><p>Demo User · +91 XXXXXXX123</p><span><BadgeCheck size={14} /> Demo profile</span></div></div><div className="detail-card" style={{ marginTop: 13 }}><DetailLine label="Full name" value="Ritu Ratnaparkhi" /><DetailLine label="Mobile number" value="+91 XXXXXXX123" /><DetailLine label="UPI ID" value="ritu@securepay" /><DetailLine label="Account type" value="Demo User" /></div><p className="inline-demo-note"><Shield size={14} /> Profile details are sample data and cannot be used for real banking.</p><Button variant="outline" className="full-button" onClick={() => navigate("/profile")}>Back to profile</Button></div>; }
+function ProfileDetails() { const { data, database, navigate, t } = useApp(); return <div className="narrow-page"><PageHeading back title={t("personalDetails")} subtitle={database ? "Synthetic profile loaded from the demo database." : "Your local demo profile information."} /><DemoDatabaseNotice /><div className="profile-card"><Avatar name={data.user.name} tone="deep" /><div><h2>{data.user.name}</h2><p>Demo profile · {data.user.phone || "Mobile unavailable"}</p><span><BadgeCheck size={14} /> Not a Supabase Auth account</span></div></div><div className="detail-card" style={{ marginTop: 13 }}><DetailLine label="Full name" value={data.user.name} /><DetailLine label="Mobile number" value={data.user.phone || "Not available"} />{database && <DetailLine label="Email" value={database.user.email ?? "Not available"} />}<DetailLine label="UPI ID" value={data.user.upiId || "Not available"} /><DetailLine label="Account" value={database?.accounts[0]?.account_type ?? "Local demo profile"} /></div><p className="inline-demo-note"><Shield size={14} /> Profile details are synthetic and cannot be used for real banking.</p><Button variant="outline" className="full-button" onClick={() => navigate("/profile")}>Back to profile</Button></div>; }
 function ProfilePage() {
-  const { data, t, navigate, update, setToast } = useApp(); const options = [{ icon: <UserRound />, label: "Personal details", to: "/profile/details" }, { icon: <CreditCard />, label: "Bank accounts", to: "/balance" }, { icon: <AtIcon />, label: "UPI IDs", to: "/balance" }, { icon: <Users />, label: t("manage"), to: "/recipients" }, { icon: <ShieldCheck />, label: "Security settings", to: "/security" }, { icon: <Globe2 />, label: t("language"), to: "/language" }, { icon: <Bell />, label: t("notifications"), to: "/notifications" }, { icon: <CircleHelp />, label: t("help"), to: "/help" }, { icon: <Settings />, label: t("settings"), to: "/settings" }];
-  return <div className="profile-page"><PageHeading title={t("profileTitle")} subtitle="Manage your demo profile and preferences." /><div className="profile-card"><Avatar name="Ritu Ratnaparkhi" tone="deep" /><div><h2>Ritu Ratnaparkhi</h2><p>Demo User · +91 XXXXXXX123</p><span><BadgeCheck size={14} /> Demo profile verified</span></div><button onClick={() => { setToast("Personal details are demo-only"); }} aria-label="Edit profile"><MoreHorizontal size={20} /></button></div><div className="profile-menu">{options.map(o => <button key={o.label} onClick={() => navigate(o.to)}><span>{o.icon}</span><b>{o.label}</b><ChevronRight size={16} /></button>)}</div><Button variant="outline" className="logout-button" onClick={() => { update({ introDone: false, auth: { ...data.auth, isAuthenticated: false }, loginMobile: "" }); navigate("/login"); }}><LogOut size={17} />{t("logout")}</Button><DemoDisclaimer /></div>;
+  const { data, database, t, navigate, update, setToast } = useApp(); const options = [{ icon: <UserRound />, label: "Personal details", to: "/profile/details" }, { icon: <CreditCard />, label: "Bank accounts", to: "/balance" }, { icon: <AtIcon />, label: "UPI IDs", to: "/balance" }, { icon: <Users />, label: t("manage"), to: "/recipients" }, { icon: <ShieldCheck />, label: "Security settings", to: "/security" }, { icon: <Globe2 />, label: t("language"), to: "/language" }, { icon: <Bell />, label: t("notifications"), to: "/notifications" }, { icon: <CircleHelp />, label: t("help"), to: "/help" }, { icon: <Settings />, label: t("settings"), to: "/settings" }];
+  return <div className="profile-page"><DemoDatabaseNotice /><PageHeading title={t("profileTitle")} subtitle="Manage your demo profile and preferences." /><div className="profile-card"><Avatar name={data.user.name} tone="deep" /><div><h2>{data.user.name}</h2><p>Demo profile · {data.user.phone || "Mobile unavailable"}</p><span><BadgeCheck size={14} />{database ? "Synthetic database profile" : "Local demo profile"}</span></div><button onClick={() => { setToast("Profile editing is not implemented"); }} aria-label="Edit profile"><MoreHorizontal size={20} /></button></div><div className="profile-menu">{options.map(o => <button key={o.label} onClick={() => navigate(o.to)}><span>{o.icon}</span><b>{o.label}</b><ChevronRight size={16} /></button>)}</div><Button variant="outline" className="logout-button" onClick={() => { update({ introDone: false, auth: { ...data.auth, isAuthenticated: false }, loginMobile: "" }); navigate("/login"); }}><LogOut size={17} />{t("logout")}</Button><DemoDisclaimer /></div>;
 }
 function SettingsPage() {
   const { data, update, t, startTest, simulateIncoming, navigate, setToast } = useApp(); const [devOpen, setDevOpen] = useState(false);
@@ -467,10 +778,34 @@ function HelpPage() {
 }
 function Splash() { const { navigate } = useApp(); return <div className="intro-screen"><div className="intro-brand"><span className="brand-mark"><Shield size={22} /><span>₹</span></span><b>SecurePay</b></div><div className="intro-art"><div className="intro-orbit orbit-one" /><div className="intro-orbit orbit-two" /><div className="intro-shield"><Shield size={56} /><span>₹</span></div><span className="intro-bubble bubble-a"><Check size={16} /></span><span className="intro-bubble bubble-b"><LockKeyhole size={16} /></span></div><h1>Pay with confidence.<br /><span>Protected by design.</span></h1><p>A smarter demo payment experience with adaptive security built into every step.</p><Button onClick={() => navigate("/onboarding")}>Get started<ArrowRight size={17} /></Button><DemoDisclaimer /></div>; }
 function Onboarding() { const { navigate } = useApp(); return <div className="intro-screen onboarding-screen"><button className="intro-back" onClick={() => navigate("/splash")}><ArrowLeft size={17} />Back</button><div className="intro-art compact-art"><div className="intro-shield"><ShieldCheck size={52} /></div><span className="intro-bubble bubble-a"><Activity size={16} /></span></div><span className="eyebrow">SMARTER SECURITY</span><h1>Every payment<br /><span>gets its own check.</span></h1><p>SecurePay adapts verification to the risk of each demo transaction. More protection when a payment needs it.</p><div className="onboarding-points"><div><span><Activity size={16} /></span><b>Risk-aware</b><small>Each payment is assessed</small></div><div><span><LockKeyhole size={16} /></span><b>Adaptive</b><small>Verification matches risk</small></div></div><Button onClick={() => navigate("/login")}>Continue<ArrowRight size={17} /></Button><DemoDisclaimer /></div>; }
-function Login() { const { data, update, navigate, t } = useApp(); const [mobile, setMobile] = useState(data.loginMobile || ""); const [error, setError] = useState(""); const submit = () => { const number = mobile.replace(/\D/g, "").slice(-10); if (!/^\d{10}$/.test(number)) { setError(t("invalidLoginMobile")); return; } const existing = number === "9876543210" || data.auth.knownMobiles.includes(number); update({ loginMobile: number, auth: { ...data.auth, lastMobile: number } }); navigate(existing ? "/auth/unlock" : "/auth/otp"); }; return <div className="intro-screen login-screen"><div className="intro-brand"><span className="brand-mark"><Shield size={22} /><span>₹</span></span><b>SecurePay</b></div><span className="eyebrow">DEMO ACCOUNT ACCESS</span><h1>Welcome to<br /><span>SecurePay.</span></h1><p>Enter your mobile number to continue to your demo account.</p><label className="field-label login-mobile-field">Mobile number<div className="mobile-number-entry"><span>+91</span><input inputMode="numeric" autoComplete="tel-national" value={mobile} onChange={e => { setMobile(e.target.value.replace(/\D/g, "").slice(0, 10)); setError(""); }} placeholder="98765 43210" /></div></label>{error && <p className="field-error">{error}</p>}<Button className="full-button" onClick={submit}>Continue<ArrowRight size={17} /></Button><p className="inline-demo-note"><Shield size={14} />Demo account only · No real OTP is sent</p><DemoDisclaimer /></div>; }
+function DemoProfileLoading() { return <div className="intro-screen login-screen" role="status"><div className="intro-brand"><span className="brand-mark"><Shield size={22} /><span>₹</span></span><b>SecurePay</b></div><span className="eyebrow">DATABASE CONNECTION</span><h1>Loading your<br /><span>demo profile.</span></h1><p>Waiting for the selected demo account before continuing.</p><DemoDisclaimer /></div>; }
+function Login() {
+  const { data, database, databaseStatus, update, navigate, t } = useApp();
+  const [mobile, setMobile] = useState(data.loginMobile || normalizedMobile(data.user.phone));
+  const [mobileEdited, setMobileEdited] = useState(false);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    if (!mobileEdited) setMobile(data.loginMobile || normalizedMobile(data.user.phone));
+  }, [data.loginMobile, data.user.phone, mobileEdited]);
+  const submit = () => {
+    const number = normalizedMobile(mobile);
+    if (!/^\d{10}$/.test(number)) { setError(t("invalidLoginMobile")); return; }
+    const selectedMobile = normalizedMobile(data.user.phone);
+    if (database && (!selectedMobile || number !== selectedMobile)) {
+      setError(selectedMobile
+        ? `Use the mobile number for ${data.user.name}.`
+        : "The selected demo profile has no mobile number.");
+      return;
+    }
+    const existing = Boolean(database) || number === "9876543210" || data.auth.knownMobiles.includes(number);
+    update({ loginMobile: number, auth: { ...data.auth, lastMobile: number } });
+    navigate(existing ? "/auth/unlock" : "/auth/otp");
+  };
+  return <div className="intro-screen login-screen"><div className="intro-brand"><span className="brand-mark"><Shield size={22} /><span>₹</span></span><b>SecurePay</b></div><span className="eyebrow">DEMO ACCOUNT ACCESS</span><h1>Welcome to<br /><span>SecurePay.</span></h1><p>Enter your mobile number to continue to your demo account.</p><label className="field-label login-mobile-field">Mobile number<div className="mobile-number-entry"><span>+91</span><input inputMode="numeric" autoComplete="tel-national" value={databaseStatus === "loading" ? "" : mobile} disabled={databaseStatus === "loading"} onChange={e => { setMobileEdited(true); setMobile(e.target.value.replace(/\D/g, "").slice(0, 10)); setError(""); }} placeholder="98765 43210" /></div></label>{error && <p className="field-error">{error}</p>}<Button className="full-button" onClick={submit} disabled={databaseStatus === "loading"}>Continue<ArrowRight size={17} /></Button><p className="inline-demo-note"><Shield size={14} />{databaseStatus === "loading" ? "Loading selected demo profile…" : `Demo profile: ${data.user.name} · No real OTP is sent`}</p><DemoDisclaimer /></div>;
+}
 function AccessOtp() { const { data, update, unlockApp, navigate, t } = useApp(); const [otp, setOtp] = useState(""); const [error, setError] = useState(""); const finish = (value: string) => { const code = value.replace(/\D/g, "").slice(0, 6); setOtp(code); setError(""); if (code.length === 6) { if (code === "123456") { update({ auth: { ...data.auth, isAuthenticated: true, knownMobiles: [...new Set([...data.auth.knownMobiles, data.loginMobile])], lastMobile: data.loginMobile } }); navigate("/"); } else setError(t("invalidDemoOtp")); } }; return <div className="intro-screen login-screen"><button className="intro-back" onClick={() => navigate("/login")}><ArrowLeft size={17} />Back</button><div className="intro-brand"><span className="brand-mark"><Shield size={22} /><span>₹</span></span><b>SecurePay</b></div><span className="eyebrow">DEMO VERIFICATION</span><h1>Verify your<br /><span>mobile number.</span></h1><p>Demo verification code for +91 {data.loginMobile}.</p><div className="otp-boxes">{Array.from({ length: 6 }, (_, i) => <input key={i} id={`access-otp-${i}`} aria-label={`OTP digit ${i + 1}`} inputMode="numeric" maxLength={1} value={otp[i] ?? ""} onChange={e => { const chars = otp.split(""); chars[i] = e.target.value.replace(/\D/g, "").slice(-1); finish(chars.join("")); if (e.target.value && i < 5) (document.getElementById(`access-otp-${i + 1}`) as HTMLInputElement)?.focus(); }} />)}</div>{error && <p className="field-error">{error}</p>}<div className="demo-code-card"><span>DEMO OTP</span><b>123456</b><button onClick={() => finish("123456")}>Use code</button></div><Button className="full-button" onClick={() => finish(otp)}>Verify OTP<ArrowRight size={17} /></Button><DemoDisclaimer /></div>; }
-function UnlockPage() { const { data, navigate } = useApp(); return <div className="intro-screen login-screen"><div className="intro-brand"><span className="brand-mark"><Shield size={22} /><span>₹</span></span><b>SecurePay</b></div><span className="eyebrow">EXISTING DEMO ACCOUNT</span><h1>Welcome back,<br /><span>Ritu.</span></h1><p>Choose how to unlock your account.</p><div className="login-profile"><Avatar name="Ritu Ratnaparkhi" tone="deep" /><div><b>Ritu Ratnaparkhi</b><small>+91 {data.auth.lastMobile || "9876543210"}</small></div><BadgeCheck size={18} className="verified-icon" /></div><Button className="full-button" onClick={() => navigate("/auth/fingerprint")}><Fingerprint size={18} />Use Fingerprint</Button><Button variant="outline" className="full-button" onClick={() => navigate("/auth/pin")}><LockKeyhole size={17} />Use PIN</Button><button className="text-button" onClick={() => navigate("/login")}>Use another mobile number</button></div>; }
-function AccessPin() { const { unlockApp, navigate, t } = useApp(); const [pin, setPin] = useState(""); const [error, setError] = useState(""); const enter = (key: string) => { if (key === "back") { setPin(pin.slice(0, -1)); return; } if (key === "clear") { setPin(""); return; } if (pin.length >= 6) return; const next = pin + key; setPin(next); if (next.length === 6) setTimeout(() => { if (next === "123456") unlockApp(); else { setError(t("invalidDemoPin")); setPin(""); } }, 120); }; return <div className="intro-screen login-screen"><button className="intro-back" onClick={() => navigate("/auth/unlock")}><ArrowLeft size={17} />Back</button><div className="intro-brand"><span className="brand-mark"><Shield size={22} /><span>₹</span></span><b>SecurePay</b></div><span className="eyebrow">ACCOUNT UNLOCK</span><h1>Welcome back,<br /><span>Ritu.</span></h1><p>Enter your 6-digit demo PIN.</p><div className="pin-dots">{Array.from({ length: 6 }, (_, i) => <i key={i} className={i < pin.length ? "filled" : ""} />)}</div>{error && <p className="field-error centered">{error}</p>}<div className="pin-keypad">{["1","2","3","4","5","6","7","8","9","back","0","clear"].map(key => <button key={key} onClick={() => enter(key)} aria-label={key === "back" ? "Backspace" : key === "clear" ? "Clear" : key}>{key === "back" ? <ArrowLeft size={20} /> : key === "clear" ? <X size={19} /> : key}</button>)}</div><p className="demo-credential"><span>Demo PIN</span><b>123456</b><button onClick={() => { setPin("123456"); setTimeout(unlockApp, 120); }}>Use demo PIN</button></p></div>; }
+function UnlockPage() { const { data, navigate } = useApp(); return <div className="intro-screen login-screen"><div className="intro-brand"><span className="brand-mark"><Shield size={22} /><span>₹</span></span><b>SecurePay</b></div><span className="eyebrow">EXISTING DEMO ACCOUNT</span><h1>Welcome back,<br /><span>{data.user.name}.</span></h1><p>Choose how to unlock your account.</p><div className="login-profile"><Avatar name={data.user.name} tone="deep" /><div><b>{data.user.name}</b><small>+91 {normalizedMobile(data.user.phone) || data.auth.lastMobile}</small></div><BadgeCheck size={18} className="verified-icon" /></div><Button className="full-button" onClick={() => navigate("/auth/fingerprint")}><Fingerprint size={18} />Use Fingerprint</Button><Button variant="outline" className="full-button" onClick={() => navigate("/auth/pin")}><LockKeyhole size={17} />Use PIN</Button><button className="text-button" onClick={() => navigate("/login")}>Use another mobile number</button></div>; }
+function AccessPin() { const { data, unlockApp, navigate, t } = useApp(); const [pin, setPin] = useState(""); const [error, setError] = useState(""); const enter = (key: string) => { if (key === "back") { setPin(pin.slice(0, -1)); return; } if (key === "clear") { setPin(""); return; } if (pin.length >= 6) return; const next = pin + key; setPin(next); if (next.length === 6) setTimeout(() => { if (next === "123456") unlockApp(); else { setError(t("invalidDemoPin")); setPin(""); } }, 120); }; return <div className="intro-screen login-screen"><button className="intro-back" onClick={() => navigate("/auth/unlock")}><ArrowLeft size={17} />Back</button><div className="intro-brand"><span className="brand-mark"><Shield size={22} /><span>₹</span></span><b>SecurePay</b></div><span className="eyebrow">ACCOUNT UNLOCK</span><h1>Welcome back,<br /><span>{data.user.name}.</span></h1><p>Enter your 6-digit demo PIN.</p><div className="pin-dots">{Array.from({ length: 6 }, (_, i) => <i key={i} className={i < pin.length ? "filled" : ""} />)}</div>{error && <p className="field-error centered">{error}</p>}<div className="pin-keypad">{["1","2","3","4","5","6","7","8","9","back","0","clear"].map(key => <button key={key} onClick={() => enter(key)} aria-label={key === "back" ? "Backspace" : key === "clear" ? "Clear" : key}>{key === "back" ? <ArrowLeft size={20} /> : key === "clear" ? <X size={19} /> : key}</button>)}</div><p className="demo-credential"><span>Demo PIN</span><b>123456</b><button onClick={() => { setPin("123456"); setTimeout(unlockApp, 120); }}>Use demo PIN</button></p></div>; }
 function AccessFingerprint() { const { unlockApp, navigate } = useApp(); const [scanning, setScanning] = useState(false); const [verified, setVerified] = useState(false); const start = () => { setScanning(true); setTimeout(() => setVerified(true), 1300); }; return <div className="intro-screen login-screen"><button className="intro-back" onClick={() => navigate("/auth/unlock")}><ArrowLeft size={17} />Back</button><div className="intro-brand"><span className="brand-mark"><Shield size={22} /><span>₹</span></span><b>SecurePay</b></div><span className="eyebrow">SIMULATED DEVICE CHECK</span><div className={`fingerprint-ring ${scanning ? "scan-active" : ""} ${verified ? "is-verified" : ""}`}>{verified ? <Check size={42} /> : <Fingerprint size={48} />}{scanning && !verified && <span />}</div><h1>{verified ? "Fingerprint verified" : scanning ? "Scanning..." : "Unlock SecurePay"}</h1><p>{verified ? "Identity confirmed. Opening your demo account." : "This simulated check does not access biometric hardware."}</p>{verified ? <Button className="full-button" onClick={unlockApp}>Continue<ArrowRight size={17} /></Button> : <Button className="full-button" onClick={start} disabled={scanning}><Fingerprint size={18} />Use Fingerprint</Button>}<button className="text-button" onClick={() => navigate("/auth/pin")}>Use PIN instead</button></div>; }
 
 export default function Index() { return <SecurePay />; }

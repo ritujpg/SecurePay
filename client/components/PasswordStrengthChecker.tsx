@@ -5,13 +5,22 @@ import { evaluatePasswordStrength, type PasswordStrengthResult } from "../lib/pa
 type PasswordStrengthCheckerProps = {
   t: (key: string) => string;
   onClose: () => void;
+  onChecked?: (record: {
+    strength: "Weak" | "Moderate" | "Strong";
+    score: number;
+    length_check: boolean;
+    uppercase_check: boolean;
+    lowercase_check: boolean;
+    number_check: boolean;
+    special_character_check: boolean;
+  }) => Promise<void>;
 };
 
 function formatMessage(template: string, values: Record<string, number>) {
   return template.replace(/\{(\w+)\}/g, (_, key: string) => String(values[key] ?? ""));
 }
 
-export default function PasswordStrengthChecker({ t, onClose }: PasswordStrengthCheckerProps) {
+export default function PasswordStrengthChecker({ t, onClose, onChecked }: PasswordStrengthCheckerProps) {
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState("");
@@ -35,7 +44,7 @@ export default function PasswordStrengthChecker({ t, onClose }: PasswordStrength
     onClose();
   };
 
-  const checkStrength = (event: React.FormEvent<HTMLFormElement>) => {
+  const checkStrength = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!password) {
       setError(t("passwordCheckerEmpty"));
@@ -45,7 +54,23 @@ export default function PasswordStrengthChecker({ t, onClose }: PasswordStrength
 
     const evaluation = evaluatePasswordStrength(password);
     setResult(evaluation);
+    const record = {
+      strength: evaluation.score < 35 ? "Weak" as const : evaluation.score < 60 ? "Moderate" as const : "Strong" as const,
+      score: evaluation.score,
+      length_check: password.length >= 12,
+      uppercase_check: /[A-Z]/.test(password),
+      lowercase_check: /[a-z]/.test(password),
+      number_check: /[0-9]/.test(password),
+      special_character_check: /[^A-Za-z0-9\s]/.test(password),
+    };
     clearPasswordOnly();
+    if (onChecked) {
+      try {
+        await onChecked(record);
+      } catch (saveError) {
+        setError(`The local check completed, but its history could not be saved: ${saveError instanceof Error ? saveError.message : "Unknown error"}`);
+      }
+    }
   };
 
   const clearPasswordOnly = () => {

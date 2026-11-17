@@ -7,9 +7,21 @@ type PhishingCheckProps = {
   t: (key: string) => string;
   onClose: () => void;
   onIgnore: (level: PhishingCheckResult["level"]) => void;
+  onChecked?: (record: {
+    input_type: "URL" | "MESSAGE";
+    input_hash: string;
+    risk_level: "Safe" | "Suspicious" | "High Risk";
+    risk_score: number;
+    explanation: string;
+  }) => Promise<void>;
 };
 
-export default function PhishingCheck({ t, onClose, onIgnore }: PhishingCheckProps) {
+async function hashInput(value: string) {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value.trim()));
+  return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, "0")).join("");
+}
+
+export default function PhishingCheck({ t, onClose, onIgnore, onChecked }: PhishingCheckProps) {
   const [mode, setMode] = useState<PhishingCheckMode>("url");
   const [submittedText, setSubmittedText] = useState("");
   const [error, setError] = useState("");
@@ -46,6 +58,29 @@ export default function PhishingCheck({ t, onClose, onIgnore }: PhishingCheckPro
     clear();
   };
 
+  const saveHistory = async (
+    input: string,
+    checked: PhishingCheckResult,
+    predictions: Array<PhishingPrediction | SmsPrediction> = [],
+  ) => {
+    if (!onChecked) return;
+    const levels = [
+      checked.level === "highRisk" ? "High Risk" : checked.level === "suspicious" ? "Suspicious" : "Safe",
+      ...predictions.map(prediction => prediction.risk_level === "Phishing" ? "High Risk" : prediction.risk_level === "Suspicious" ? "Suspicious" : "Safe"),
+    ] as Array<"Safe" | "Suspicious" | "High Risk">;
+    const level = levels.includes("High Risk") ? "High Risk" : levels.includes("Suspicious") ? "Suspicious" : "Safe";
+    const riskScore = Math.max(checked.ruleScore, ...predictions.map(prediction => prediction.phishing_risk_score));
+    const modelExplanation = predictions.map(prediction => `${prediction.model}: ${prediction.risk_level} (${prediction.phishing_risk_score}/100)`);
+    const ruleExplanation = checked.indicators.map(indicator => t(indicator.explanationKey));
+    await onChecked({
+      input_type: mode === "url" ? "URL" : "MESSAGE",
+      input_hash: await hashInput(input),
+      risk_level: level,
+      risk_score: riskScore,
+      explanation: [...ruleExplanation, ...modelExplanation].join("; ") || t(checked.defaultRecommendationKey),
+    });
+  };
+
   const submit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!submittedText.trim()) {
@@ -56,10 +91,18 @@ export default function PhishingCheck({ t, onClose, onIgnore }: PhishingCheckPro
       return;
     }
     setError("");
-    setResult(checkForPhishing(mode, submittedText));
+    const ruleResult = checkForPhishing(mode, submittedText);
+    setResult(ruleResult);
     setModelResult(null);
     setSmsResult(null);
-    if (mode === "url") return;
+    if (mode === "url") {
+      try {
+        await saveHistory(submittedText, ruleResult);
+      } catch (saveError) {
+        setError(`The local check completed, but its history could not be saved: ${saveError instanceof Error ? saveError.message : "Unknown error"}`);
+      }
+      return;
+    }
 
     const requestId = ++requestIdRef.current;
     setChecking(true);
@@ -80,6 +123,15 @@ export default function PhishingCheck({ t, onClose, onIgnore }: PhishingCheckPro
       } else {
         const detail = smsOutcome.reason instanceof Error ? smsOutcome.reason.message : t("smsRequestFailed");
         requestErrors.push(`${t("smsModelResult")}: ${detail}`);
+      }
+      const predictions = [
+        ...(phishingOutcome.status === "fulfilled" ? [phishingOutcome.value] : []),
+        ...(smsOutcome.status === "fulfilled" ? [smsOutcome.value] : []),
+      ];
+      try {
+        await saveHistory(submittedText, ruleResult, predictions);
+      } catch (saveError) {
+        requestErrors.push(`The local check completed, but its history could not be saved: ${saveError instanceof Error ? saveError.message : "Unknown error"}`);
       }
       setError(requestErrors.join(" "));
       setChecking(false);

@@ -1,4 +1,4 @@
-import { Router } from "express";
+import { Router, type Request } from "express";
 
 const modelEndpoints = {
   "predict": "/predict",
@@ -9,6 +9,42 @@ const modelEndpoints = {
 } as const;
 
 const router = Router();
+
+function isLoopback(value: string) {
+  return value === "127.0.0.1" || value === "::1" || value === "::ffff:127.0.0.1" || value === "localhost";
+}
+
+function isLocalRequest(req: Request) {
+  const remoteAddress = req.socket.remoteAddress?.replace(/^::ffff:/, "");
+  const host = req.get("host");
+  if (!remoteAddress || !host || !isLoopback(remoteAddress)) return false;
+
+  let hostName: string;
+  try {
+    hostName = new URL(`http://${host}`).hostname.replace(/^\[|\]$/g, "");
+  } catch {
+    return false;
+  }
+  if (!isLoopback(hostName)) return false;
+
+  const origin = req.get("origin");
+  if (!origin) return true;
+  try {
+    const originUrl = new URL(origin);
+    return (originUrl.protocol === "http:" || originUrl.protocol === "https:") &&
+      isLoopback(originUrl.hostname.replace(/^\[|\]$/g, ""));
+  } catch {
+    return false;
+  }
+}
+
+router.use((req, res, next) => {
+  if (!isLocalRequest(req)) {
+    res.status(403).json({ error: "The ML API is available only from localhost" });
+    return;
+  }
+  next();
+});
 
 for (const [route, endpoint] of Object.entries(modelEndpoints)) {
   router.post(`/${route}`, async (req, res) => {
@@ -25,9 +61,21 @@ for (const [route, endpoint] of Object.entries(modelEndpoints)) {
 
     let target: URL;
     try {
-      target = new URL(endpoint, serviceUrl.endsWith("/") ? serviceUrl : `${serviceUrl}/`);
+      const configuredUrl = new URL(serviceUrl);
+      if (
+        configuredUrl.protocol !== "http:" ||
+        !isLoopback(configuredUrl.hostname.replace(/^\[|\]$/g, "")) ||
+        configuredUrl.username ||
+        configuredUrl.password ||
+        configuredUrl.pathname !== "/" ||
+        configuredUrl.search ||
+        configuredUrl.hash
+      ) {
+        throw new Error("ML_SERVICE_URL must point to a loopback HTTP service");
+      }
+      target = new URL(endpoint, configuredUrl);
     } catch {
-      res.status(500).json({ error: "ML_SERVICE_URL must be a valid URL" });
+      res.status(500).json({ error: "ML_SERVICE_URL must point to a loopback HTTP service" });
       return;
     }
 

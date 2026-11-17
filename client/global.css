@@ -361,8 +361,40 @@ h1, h2, h3, h4, b, strong { font-family: "Manrope", "DM Sans", sans-serif; }
 .mobile-presentation-toggle { min-height: 36px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; padding: 0 11px; color: #276447; border: 1px solid #cfe5d7; border-radius: 9px; background: #f3faf5; font: inherit; font-size: 11px; font-weight: 700; white-space: nowrap; cursor: pointer; }
 .mobile-presentation-toggle:hover { background: #e8f5ec; }
 .mobile-presentation-toggle:focus-visible, .mobile-presentation-close:focus-visible { outline: 3px solid #73d49a; outline-offset: 3px; }
-.mobile-presentation-overlay { position: fixed; z-index: 200; inset: 0; display: grid; place-items: center; overflow: hidden; padding: 16px 24px; background: #08130de8; backdrop-filter: blur(5px); }
-.mobile-presentation-phone { width: 406px; height: 860px; box-sizing: border-box; overflow: hidden; border: 8px solid #21382b; border-radius: 38px; background: #101815; box-shadow: 0 28px 90px #0008; transform-origin: center; }
+.mobile-presentation-overlay {
+  position: fixed;
+  z-index: 200;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  padding: 12px;
+  box-sizing: border-box;
+  background: #08130de8;
+  backdrop-filter: blur(5px);
+}
+
+.mobile-presentation-phone {
+  width: 390px;
+  height: 920px;
+  flex-shrink: 0;
+  box-sizing: border-box;
+  overflow: hidden;
+  border: 8px solid #21382b;
+  border-radius: 38px;
+  background: #101815;
+  box-shadow: 0 28px 90px #0008;
+  transform-origin: center center;
+}
+
+.mobile-presentation-phone iframe {
+  width: 100%;
+  height: 100%;
+  display: block;
+  border: 0;
+  background: #f5f7f6;
+}
 .mobile-presentation-phone iframe { width: 100%; height: 100%; display: block; border: 0; background: #f5f7f6; }
 .mobile-presentation-close { position: fixed; z-index: 1; top: 17px; right: 18px; width: 46px; height: 46px; display: grid; place-items: center; color: #e7f0ea; border: 1px solid #ffffff44; border-radius: 12px; background: #1b3025; cursor: pointer; }
 .mobile-presentation-close:hover { background: #284535; }

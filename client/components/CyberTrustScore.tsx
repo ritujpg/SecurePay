@@ -3,6 +3,7 @@ import { calculateCyberTrustScore, clampCyberTrustScore, cyberTrustRingDegrees, 
 
 type CyberTrustScoreProps = {
   signals: CyberTrustSignals;
+  scoreOverride?: number;
   t: (key: string) => string;
   onViewActivity: () => void;
 };
@@ -11,20 +12,21 @@ function titleCase(value: string) {
   return `${value[0].toUpperCase()}${value.slice(1)}`;
 }
 
-export default function CyberTrustScore({ signals, t, onViewActivity }: CyberTrustScoreProps) {
+export default function CyberTrustScore({ signals, scoreOverride, t, onViewActivity }: CyberTrustScoreProps) {
   const result = calculateCyberTrustScore(signals);
-  const score = clampCyberTrustScore(result.score);
+  const score = clampCyberTrustScore(scoreOverride ?? result.score);
   const ringDegrees = cyberTrustRingDegrees(score);
-  const rating = t(`cyberTrustRating${titleCase(result.rating)}`);
+  const ratingKey = score < 40 ? "needsImprovement" : score < 60 ? "fair" : score < 80 ? "good" : "excellent";
+  const rating = t(`cyberTrustRating${titleCase(scoreOverride === undefined ? result.rating : ratingKey)}`);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const detailsId = "cyber-trust-details";
 
   return <section className="security-score-card cyber-trust-card" aria-labelledby="cyber-trust-title">
     <div className="cyber-trust-summary">
       <div className="security-score-copy cyber-trust-copy">
-        <span className="status-pill"><i />{t(result.illustrative ? "cyberTrustIllustrativeLabel" : "cyberTrustPersonalizedLabel")}</span>
+        <span className="status-pill"><i />{scoreOverride === undefined ? t(result.illustrative ? "cyberTrustIllustrativeLabel" : "cyberTrustPersonalizedLabel") : "Saved demo score"}</span>
         <h2 id="cyber-trust-title">{t("cyberTrustTitle")}</h2>
-        <p>{t(result.illustrative ? result.explanationKey : "cyberTrustCompactExplanation")}</p>
+        <p>{scoreOverride === undefined ? t(result.illustrative ? result.explanationKey : "cyberTrustCompactExplanation") : "Latest score from the synthetic demo database; it is not a live security assessment."}</p>
         <button
           type="button"
           className="cyber-trust-details-toggle"
@@ -34,10 +36,10 @@ export default function CyberTrustScore({ signals, t, onViewActivity }: CyberTru
         >{t(detailsOpen ? "cyberTrustLessDetails" : "cyberTrustMoreDetails")}</button>
       </div>
       <div className="cyber-trust-score-display">
-        <div className="security-score-ring" data-score={score} style={{ "--cyber-trust-angle": `${ringDegrees}deg` } as React.CSSProperties} role="meter" aria-label={t("cyberTrustTitle")} aria-valuemin={0} aria-valuemax={100} aria-valuenow={score} aria-valuetext={`${score} / 100${result.illustrative ? "" : `, ${rating}`}`}>
+        <div className="security-score-ring" data-score={score} style={{ "--cyber-trust-angle": `${ringDegrees}deg` } as React.CSSProperties} role="meter" aria-label={t("cyberTrustTitle")} aria-valuemin={0} aria-valuemax={100} aria-valuenow={score} aria-valuetext={`${score} / 100${result.illustrative && scoreOverride === undefined ? "" : `, ${rating}`}`}>
           <span>{score}</span><small>/100</small>
         </div>
-        {!result.illustrative && <strong>{rating}</strong>}
+        {(!result.illustrative || scoreOverride !== undefined) && <strong>{rating}</strong>}
       </div>
     </div>
     <div id={detailsId} className="cyber-trust-details" hidden={!detailsOpen}>

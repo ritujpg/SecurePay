@@ -6,7 +6,7 @@ import { createServer } from "./server";
 // https://vitejs.dev/config/
 export default defineConfig(({ mode }) => ({
   server: {
-    host: "::",
+    host: "127.0.0.1",
     port: 8080,
     fs: {
       allow: ["./client", "./shared", "index.html"],
@@ -30,7 +30,7 @@ function expressPlugin(): Plugin {
     name: "express-plugin",
     apply: "serve", // Only apply during development (serve mode)
     configureServer(server) {
-      const app = createServer();
+      const app = createServer({ enableLocalDemoDatabase: true, enableLocalMlService: true });
 
       // Add Express app as middleware to Vite dev server
       server.middlewares.use(app);
