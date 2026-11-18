@@ -22,6 +22,25 @@ afterEach(() => {
 });
 
 describe("ML API proxy", () => {
+  it("returns a safe client error for malformed JSON", async () => {
+    const { server, port } = await startTestServer();
+
+    try {
+      const response = await clientFetch(`http://127.0.0.1:${port}/api/ml/predict`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{",
+      });
+
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toEqual({ error: "Malformed JSON request body" });
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        server.close(error => error ? reject(error) : resolve());
+      });
+    }
+  });
+
   it("forwards a whitelisted model request to Flask and relays its response", async () => {
     const previousServiceUrl = process.env.ML_SERVICE_URL;
     process.env.ML_SERVICE_URL = "http://127.0.0.1:5001";
@@ -102,6 +121,61 @@ describe("ML API proxy", () => {
       await expect(response.json()).resolves.toEqual({
         error: "XGBoost Transaction Risk model is unavailable",
       });
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        server.close(error => error ? reject(error) : resolve());
+      });
+      if (previousServiceUrl === undefined) delete process.env.ML_SERVICE_URL;
+      else process.env.ML_SERVICE_URL = previousServiceUrl;
+    }
+  });
+
+  it("returns a generic gateway error when Flask times out", async () => {
+    const previousServiceUrl = process.env.ML_SERVICE_URL;
+    process.env.ML_SERVICE_URL = "http://127.0.0.1:5001";
+    const upstreamFetch = vi.fn().mockRejectedValue(new DOMException("private transport detail", "TimeoutError"));
+    vi.stubGlobal("fetch", upstreamFetch);
+    const { server, port } = await startTestServer();
+
+    try {
+      const response = await clientFetch(`http://127.0.0.1:${port}/api/ml/predict`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ log_amount: 1 }),
+      });
+
+      expect(response.status).toBe(502);
+      await expect(response.json()).resolves.toEqual({ error: "Unable to reach the ML service" });
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        server.close(error => error ? reject(error) : resolve());
+      });
+      if (previousServiceUrl === undefined) delete process.env.ML_SERVICE_URL;
+      else process.env.ML_SERVICE_URL = previousServiceUrl;
+    }
+  });
+
+  it("rejects malformed or non-object Flask responses", async () => {
+    const previousServiceUrl = process.env.ML_SERVICE_URL;
+    process.env.ML_SERVICE_URL = "http://127.0.0.1:5001";
+    const upstreamFetch = vi.fn()
+      .mockResolvedValueOnce(new Response("internal traceback secret-like payload", { status: 200 }))
+      .mockResolvedValueOnce(new Response("[]", { status: 200 }));
+    vi.stubGlobal("fetch", upstreamFetch);
+    const { server, port } = await startTestServer();
+
+    try {
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const response = await clientFetch(`http://127.0.0.1:${port}/api/ml/predict`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ log_amount: 1 }),
+        });
+        expect(response.status).toBe(502);
+        const body = await response.json();
+        expect(body).toEqual({ error: "The ML service returned an invalid response" });
+        expect(JSON.stringify(body)).not.toContain("traceback");
+      }
     } finally {
       await new Promise<void>((resolve, reject) => {
         server.close(error => error ? reject(error) : resolve());

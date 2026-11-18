@@ -45,6 +45,21 @@ def numeric_input(data, feature_names):
         if not is_finite_number:
             return None, f"Feature '{feature}' must be a finite number"
         values[feature] = value
+    if "log_amount" in values:
+        if values["log_amount"] < 0:
+            return None, "Feature 'log_amount' must represent a non-negative transaction amount"
+        if values["log_amount"] > math.log1p(1_000_000):
+            return None, "Feature 'log_amount' exceeds the supported transaction limit"
+        history_features = [
+            feature for feature in feature_names if feature.startswith("log_") and feature != "log_amount"
+        ]
+        if any(values[feature] < 0 for feature in history_features):
+            return None, "Transaction history features must be non-negative"
+        type_features = [feature for feature in feature_names if feature.startswith("type_")]
+        if any(values[feature] not in (0, 1) for feature in type_features):
+            return None, "Transaction type features must be binary"
+        if len(type_features) and sum(values[feature] for feature in type_features) != 1:
+            return None, "Exactly one transaction type must be selected"
     return pd.DataFrame([values], columns=feature_names), None
 
 
@@ -75,21 +90,22 @@ def clean_text(text):
 # LOAD RANDOM FOREST MODEL
 # ==========================================
 
-RF_MODEL_PATH = os.path.join(MODELS_DIR, "random_forest_fraud_model.pkl")
+RF_MODEL_PATH = os.path.join(MODELS_DIR, "paysim_random_forest_v2.joblib")
 rf_model_data = load_artifact(RF_MODEL_PATH, "Random Forest")
 rf_model = rf_model_data.get("model") if isinstance(rf_model_data, dict) else None
 rf_feature_names = rf_model_data.get("feature_names", []) if isinstance(rf_model_data, dict) else []
+rf_decision_threshold = rf_model_data.get("decision_threshold") if isinstance(rf_model_data, dict) else None
 
 
 # ==========================================
 # LOAD ISOLATION FOREST MODEL
 # ==========================================
 
-IF_MODEL_PATH = os.path.join(MODELS_DIR, "isolation_forest_fraud_model.pkl")
+IF_MODEL_PATH = os.path.join(MODELS_DIR, "paysim_isolation_forest_v2.joblib")
 if_model_data = load_artifact(IF_MODEL_PATH, "Isolation Forest")
 if_model = if_model_data.get("model") if isinstance(if_model_data, dict) else None
-if_scaler = if_model_data.get("scaler") if isinstance(if_model_data, dict) else None
 if_feature_names = if_model_data.get("feature_names", []) if isinstance(if_model_data, dict) else []
+if_decision_threshold = if_model_data.get("decision_threshold") if isinstance(if_model_data, dict) else None
 
 
 # ==========================================
@@ -113,25 +129,30 @@ phishing_model = load_artifact(PHISHING_MODEL_PATH, "Phishing Detector")
 
 XGBOOST_MODEL_PATH = os.path.join(
     MODELS_DIR,
-    "transaction_risk_xgboost.pkl"
-)
-
-XGBOOST_FEATURES_PATH = os.path.join(
-    MODELS_DIR,
-    "transaction_features.pkl"
+    "paysim_xgboost_v2.joblib"
 )
 
 xgboost_model = load_artifact(XGBOOST_MODEL_PATH, "XGBoost Transaction Risk")
-xgboost_feature_names = load_artifact(XGBOOST_FEATURES_PATH, "XGBoost feature list") or []
+xgboost_feature_names = (
+    xgboost_model.get("feature_names", [])
+    if isinstance(xgboost_model, dict)
+    else []
+)
+xgboost_decision_threshold = (
+    xgboost_model.get("decision_threshold")
+    if isinstance(xgboost_model, dict)
+    else None
+)
+xgboost_model = xgboost_model.get("model") if isinstance(xgboost_model, dict) else None
 
 
 def get_model_status():
     return {
-        "Random Forest": rf_model is not None and bool(rf_feature_names),
-        "Isolation Forest": if_model is not None and if_scaler is not None and bool(if_feature_names),
+        "Random Forest": rf_model is not None and bool(rf_feature_names) and rf_decision_threshold is not None,
+        "Isolation Forest": if_model is not None and bool(if_feature_names) and if_decision_threshold is not None,
         "Banking SMS Detector": sms_model is not None,
         "Phishing Detector": phishing_model is not None,
-        "XGBoost Transaction Risk": xgboost_model is not None and bool(xgboost_feature_names),
+        "XGBoost Transaction Risk": xgboost_model is not None and bool(xgboost_feature_names) and xgboost_decision_threshold is not None,
     }
 
 
@@ -171,12 +192,18 @@ def predict():
         if error:
             return jsonify({"error": error}), 400
 
-        prediction = int(rf_model.predict(input_df)[0])
+        probabilities = rf_model.predict_proba(input_df.to_numpy())[0]
+        positive_index = list(rf_model.classes_).index(1)
+        model_score = float(probabilities[positive_index])
+        prediction = int(model_score >= rf_decision_threshold)
 
         return jsonify({
             "model": "Random Forest",
             "prediction": prediction,
-            "result": "Fraudulent" if prediction == 1 else "Legitimate"
+            "assessment": "elevated" if prediction == 1 else "lower",
+            "model_score": round(model_score, 6),
+            "score_type": "uncalibrated_model_score",
+            "decision_threshold": round(float(rf_decision_threshold), 6),
         })
 
     except Exception:
@@ -191,26 +218,24 @@ def predict():
 @app.route("/predict-isolation", methods=["POST"])
 def predict_isolation():
     try:
-        if if_model is None or if_scaler is None or not if_feature_names:
+        if if_model is None or if_decision_threshold is None or not if_feature_names:
             return model_unavailable("Isolation Forest")
         data = request.get_json(silent=True)
         input_df, error = numeric_input(data, if_feature_names)
         if error:
             return jsonify({"error": error}), 400
 
-        scaled_input = if_scaler.transform(input_df)
-
-        raw_prediction = int(
-            if_model.predict(scaled_input)[0]
-        )
-
-        prediction = 1 if raw_prediction == -1 else 0
+        anomaly_score = -float(if_model.decision_function(input_df.to_numpy())[0])
+        prediction = int(anomaly_score >= if_decision_threshold)
+        raw_prediction = -1 if prediction else 1
 
         return jsonify({
             "model": "Isolation Forest",
             "raw_prediction": raw_prediction,
             "prediction": prediction,
-            "result": "Fraudulent" if prediction == 1 else "Legitimate"
+            "result": "Fraudulent" if prediction == 1 else "Legitimate",
+            "anomaly_score": round(anomaly_score, 6),
+            "decision_threshold": round(float(if_decision_threshold), 6),
         })
 
     except Exception:
@@ -354,29 +379,26 @@ def predict_phishing():
 @app.route("/predict-xgboost", methods=["POST"])
 def predict_xgboost():
     try:
-        if xgboost_model is None or not xgboost_feature_names:
+        if xgboost_model is None or not xgboost_feature_names or xgboost_decision_threshold is None:
             return model_unavailable("XGBoost Transaction Risk")
         data = request.get_json(silent=True)
         input_df, error = numeric_input(data, xgboost_feature_names)
         if error:
             return jsonify({"error": error}), 400
 
-        prediction = int(xgboost_model.predict(input_df)[0])
-        probabilities = xgboost_model.predict_proba(input_df)[0]
+        probabilities = xgboost_model.predict_proba(input_df.to_numpy())[0]
 
         fraud_index = list(xgboost_model.classes_).index(1)
-        legitimate_index = list(xgboost_model.classes_).index(0)
+        model_score = float(probabilities[fraud_index])
+        prediction = int(model_score >= xgboost_decision_threshold)
 
         return jsonify({
             "model": "XGBoost Transaction Risk",
             "prediction": prediction,
-            "result": "Fraudulent" if prediction == 1 else "Legitimate",
-            "fraud_probability": round(
-                float(probabilities[fraud_index]) * 100, 2
-            ),
-            "legitimate_probability": round(
-                float(probabilities[legitimate_index]) * 100, 2
-            )
+            "assessment": "elevated" if prediction == 1 else "lower",
+            "model_score": round(model_score, 6),
+            "score_type": "uncalibrated_model_score",
+            "decision_threshold": round(float(xgboost_decision_threshold), 6),
         })
 
     except Exception:

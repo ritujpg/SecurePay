@@ -87,14 +87,24 @@ for (const [route, endpoint] of Object.entries(modelEndpoints)) {
         body: JSON.stringify(req.body),
         signal: AbortSignal.timeout(20_000),
       });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Unknown network error";
-      res.status(502).json({ error: `Unable to reach the ML service: ${message}` });
+    } catch {
+      res.status(502).json({ error: "Unable to reach the ML service" });
       return;
     }
 
     const responseBody = await upstream.text();
-    res.status(upstream.status).type("application/json").send(responseBody);
+    let parsedBody: unknown;
+    try {
+      parsedBody = JSON.parse(responseBody);
+    } catch {
+      res.status(502).json({ error: "The ML service returned an invalid response" });
+      return;
+    }
+    if (typeof parsedBody !== "object" || parsedBody === null || Array.isArray(parsedBody)) {
+      res.status(502).json({ error: "The ML service returned an invalid response" });
+      return;
+    }
+    res.status(upstream.status).json(parsedBody);
   });
 }
 

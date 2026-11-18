@@ -1,0 +1,209 @@
+{
+  "dataset": "PaySim synthetic mobile money transactions",
+  "rows": 6362620,
+  "fraud_rows": 8213,
+  "fraud_rate": 0.001290820448180152,
+  "features": [
+    "log_amount",
+    "log_sender_history_count",
+    "log_beneficiary_history_count",
+    "type_CASH_IN",
+    "type_CASH_OUT",
+    "type_DEBIT",
+    "type_PAYMENT",
+    "type_TRANSFER"
+  ],
+  "excluded_predictors": [
+    "nameOrig",
+    "nameDest",
+    "isFraud",
+    "isFlaggedFraud",
+    "balance fields"
+  ],
+  "time_feature": "No hour-of-day feature is used; PaySim steps are simulation-hour buckets and SecurePay timestamps are UTC-hour buckets with no known epoch alignment.",
+  "history_definition": "Count all prior transactions regardless of status; only strictly earlier hour buckets count. Rows within the current PaySim step are excluded because their order is unknown.",
+  "class_imbalance_treatment": "Random Forest retains all positives and randomly downsamples negatives to at most 100 per positive, with no additional class weighting. XGBoost scale_pos_weight is 1.",
+  "scores_are_calibrated_probabilities": false,
+  "splits": {
+    "train": {
+      "first_step": 1,
+      "last_step": 446,
+      "rows": 6010949,
+      "fraud_rows": 5019
+    },
+    "validation": {
+      "first_step": 521,
+      "last_step": 594,
+      "rows": 157033,
+      "fraud_rows": 778
+    },
+    "calibration": {
+      "first_step": 447,
+      "last_step": 520,
+      "rows": 71058,
+      "fraud_rows": 762
+    },
+    "test": {
+      "first_step": 595,
+      "last_step": 743,
+      "rows": 123580,
+      "fraud_rows": 1654
+    }
+  },
+  "models": {
+    "Random Forest": {
+      "validation": {
+        "rows": 157033,
+        "fraud_rows": 778,
+        "precision_recall_auc": 0.2505372432939062,
+        "roc_auc": 0.91560957350136,
+        "threshold": 0.24516142645085595,
+        "precision": 0.514018691588785,
+        "recall": 0.2120822622107969,
+        "f1": 0.3002729754322111,
+        "confusion_matrix": {
+          "true_negative": 156099,
+          "false_positive": 156,
+          "false_negative": 613,
+          "true_positive": 165
+        }
+      },
+      "test": {
+        "rows": 123580,
+        "fraud_rows": 1654,
+        "precision_recall_auc": 0.3418391585632712,
+        "roc_auc": 0.9176242146875975,
+        "threshold": 0.24516142645085595,
+        "precision": 0.6812080536912751,
+        "recall": 0.24546553808948005,
+        "f1": 0.36088888888888887,
+        "confusion_matrix": {
+          "true_negative": 121736,
+          "false_positive": 190,
+          "false_negative": 1248,
+          "true_positive": 406
+        },
+        "brier_score": 0.010285840064863692,
+        "expected_calibration_error_10_bins": 0.0034191057824312847
+      },
+      "calibration_validation": {
+        "uncalibrated": {
+          "brier_score": 0.004178698309542157,
+          "expected_calibration_error_10_bins": 0.0034866375447701187
+        },
+        "isotonic_diagnostic": {
+          "brier_score": 0.0041238236915145015,
+          "expected_calibration_error_10_bins": 0.003935159610114497
+        }
+      },
+      "calibration_test": {
+        "uncalibrated": {
+          "brier_score": 0.010285840064863692,
+          "expected_calibration_error_10_bins": 0.0034191057824312847
+        },
+        "isotonic_diagnostic": {
+          "brier_score": 0.010263105271509821,
+          "expected_calibration_error_10_bins": 0.0025430528725952496
+        }
+      }
+    },
+    "Isolation Forest": {
+      "validation": {
+        "rows": 157033,
+        "fraud_rows": 778,
+        "precision_recall_auc": 0.02194231959981834,
+        "roc_auc": 0.7973154216391554,
+        "threshold": 0.09925399242630017,
+        "precision": 0.03575547866205306,
+        "recall": 0.4383033419023136,
+        "f1": 0.06611730489578284,
+        "confusion_matrix": {
+          "true_negative": 147059,
+          "false_positive": 9196,
+          "false_negative": 437,
+          "true_positive": 341
+        }
+      },
+      "test": {
+        "rows": 123580,
+        "fraud_rows": 1654,
+        "precision_recall_auc": 0.06091887851120437,
+        "roc_auc": 0.8040154358697679,
+        "threshold": 0.09925399242630017,
+        "precision": 0.09623588456712673,
+        "recall": 0.46372430471584036,
+        "f1": 0.15939318370739816,
+        "confusion_matrix": {
+          "true_negative": 114723,
+          "false_positive": 7203,
+          "false_negative": 887,
+          "true_positive": 767
+        }
+      }
+    },
+    "XGBoost": {
+      "validation": {
+        "rows": 157033,
+        "fraud_rows": 778,
+        "precision_recall_auc": 0.2427078105390038,
+        "roc_auc": 0.9169433755497716,
+        "threshold": 0.07356904447078705,
+        "precision": 0.9205298013245033,
+        "recall": 0.17866323907455012,
+        "f1": 0.2992465016146394,
+        "confusion_matrix": {
+          "true_negative": 156243,
+          "false_positive": 12,
+          "false_negative": 639,
+          "true_positive": 139
+        }
+      },
+      "test": {
+        "rows": 123580,
+        "fraud_rows": 1654,
+        "precision_recall_auc": 0.3368063325884653,
+        "roc_auc": 0.920145075904962,
+        "threshold": 0.07356904447078705,
+        "precision": 0.9712460063897763,
+        "recall": 0.1837968561064087,
+        "f1": 0.3091001525165226,
+        "confusion_matrix": {
+          "true_negative": 121917,
+          "false_positive": 9,
+          "false_negative": 1350,
+          "true_positive": 304
+        },
+        "brier_score": 0.01122443936765194,
+        "expected_calibration_error_10_bins": 0.010863236728291849
+      },
+      "calibration_validation": {
+        "uncalibrated": {
+          "brier_score": 0.004223131574690342,
+          "expected_calibration_error_10_bins": 0.00368767294389586
+        },
+        "isotonic_diagnostic": {
+          "brier_score": 0.004101921804249287,
+          "expected_calibration_error_10_bins": 0.0038425513178074154
+        }
+      },
+      "calibration_test": {
+        "uncalibrated": {
+          "brier_score": 0.01122443936765194,
+          "expected_calibration_error_10_bins": 0.010863236728291849
+        },
+        "isotonic_diagnostic": {
+          "brier_score": 0.010273406282067299,
+          "expected_calibration_error_10_bins": 0.0025472971957766553
+        }
+      }
+    }
+  },
+  "limitations": [
+    "PaySim is synthetic and is not representative evidence of real UPI fraud performance.",
+    "The PaySim amount scale and transaction mix may differ from SecurePay usage.",
+    "The dataset does not label recipient trust, device, location, or beneficiary identity risk.",
+    "The reported holdout is from the same synthetic simulator and is not an external validation set.",
+    "The hourly history window boundaries cannot be aligned exactly because PaySim's first simulation step has no known UTC offset.",
+    "Isotonic calibration diagnostics are fit on a separate chronological calibration period and measured on later validation and test periods; production scores remain uncalibrated."
+  ]
+}

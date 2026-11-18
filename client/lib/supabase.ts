@@ -112,6 +112,7 @@ export type DemoDatabase = {
   user: DemoUserRecord;
   accounts: DemoAccountRecord[];
   transactions: DemoTransactionRecord[];
+  transactionHistoryComplete: boolean;
   alerts: DemoAlertRecord[];
   securityScores: DemoSecurityScoreRecord[];
   securityChecks: DemoSecurityCheckRecord[];

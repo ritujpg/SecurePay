@@ -1,12 +1,25 @@
 import { z } from "zod";
 
 const numericFeaturesSchema = z.record(z.string(), z.number().finite());
+const paymentFraudFeaturesSchema = z.object({
+  log_amount: z.number().finite(),
+  log_sender_history_count: z.number().finite(),
+  log_beneficiary_history_count: z.number().finite(),
+  type_CASH_IN: z.number().finite(),
+  type_CASH_OUT: z.number().finite(),
+  type_DEBIT: z.number().finite(),
+  type_PAYMENT: z.number().finite(),
+  type_TRANSFER: z.number().finite(),
+}).strict();
 const messageInputSchema = z.object({ message: z.string().trim().min(1) });
 
 const randomForestResponseSchema = z.object({
   model: z.literal("Random Forest"),
   prediction: z.number().int(),
-  result: z.enum(["Fraudulent", "Legitimate"]),
+  assessment: z.enum(["elevated", "lower"]),
+  model_score: z.number().min(0).max(1),
+  score_type: z.literal("uncalibrated_model_score"),
+  decision_threshold: z.number().min(0).max(1),
 });
 
 const isolationForestResponseSchema = z.object({
@@ -14,6 +27,8 @@ const isolationForestResponseSchema = z.object({
   raw_prediction: z.number().int(),
   prediction: z.number().int(),
   result: z.enum(["Fraudulent", "Legitimate"]),
+  anomaly_score: z.number(),
+  decision_threshold: z.number(),
 });
 
 const textPredictionResponseSchema = z.object({
@@ -34,12 +49,14 @@ const phishingResponseSchema = textPredictionResponseSchema.extend({
 const xgboostResponseSchema = z.object({
   model: z.literal("XGBoost Transaction Risk"),
   prediction: z.number().int(),
-  result: z.enum(["Fraudulent", "Legitimate"]),
-  fraud_probability: z.number(),
-  legitimate_probability: z.number(),
+  assessment: z.enum(["elevated", "lower"]),
+  model_score: z.number().min(0).max(1),
+  score_type: z.literal("uncalibrated_model_score"),
+  decision_threshold: z.number().min(0).max(1),
 });
 
 export type NumericFeatures = z.infer<typeof numericFeaturesSchema>;
+export type PaymentFraudFeatures = z.infer<typeof paymentFraudFeaturesSchema>;
 export type RandomForestPrediction = z.infer<typeof randomForestResponseSchema>;
 export type IsolationForestPrediction = z.infer<typeof isolationForestResponseSchema>;
 export type SmsPrediction = z.infer<typeof smsResponseSchema>;
@@ -104,6 +121,14 @@ function validateFeatures(features: NumericFeatures): NumericFeatures {
   return parsed.data;
 }
 
+function validatePaymentFeatures(features: PaymentFraudFeatures): PaymentFraudFeatures {
+  const parsed = paymentFraudFeaturesSchema.safeParse(features);
+  if (!parsed.success) {
+    throw new MlApiError("Payment features do not match the trained model input");
+  }
+  return parsed.data;
+}
+
 function validateMessage(message: string): { message: string } {
   const parsed = messageInputSchema.safeParse({ message });
   if (!parsed.success) {
@@ -112,8 +137,8 @@ function validateMessage(message: string): { message: string } {
   return parsed.data;
 }
 
-export function predictRandomForest(features: NumericFeatures) {
-  return postPrediction("predict", validateFeatures(features), randomForestResponseSchema);
+export function predictRandomForest(features: PaymentFraudFeatures) {
+  return postPrediction("predict", validatePaymentFeatures(features), randomForestResponseSchema);
 }
 
 export function predictIsolationForest(features: NumericFeatures) {

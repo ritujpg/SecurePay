@@ -15,6 +15,7 @@ import type {
   DemoUserRecord,
 } from "../../client/lib/supabase";
 import { getSupabaseClient, getSupabaseServiceClient } from "../lib/supabase";
+import { assertUniqueRows, fetchAllPages } from "../lib/paginate";
 
 const tables = [
   "users",
@@ -28,6 +29,7 @@ const tables = [
   "password_checks",
   "phishing_checks",
 ] as const;
+type DemoTransactionRow = Omit<DemoTransactionRecord, "risk">;
 
 const passwordCheckSchema = z.object({
   idempotencyKey: z.string().uuid(),
@@ -268,13 +270,15 @@ async function loadDatabase(): Promise<DemoDatabase> {
   const accountIds = accounts.map(account => account.id);
   const client = getSupabaseClient();
 
-  const [transactionsResult, alertsResult, activitiesResult, scoresResult, checksResult, passwordsResult, phishingResult] = await Promise.all([
+  const [transactions, alertsResult, activitiesResult, scoresResult, checksResult, passwordsResult, phishingResult] = await Promise.all([
     accountIds.length
-      ? client.from("transactions")
-        .select("id,account_id,recipient_name,recipient_upi,amount,transaction_type,recipient_type,transaction_time,status,reference_number")
+      ? fetchAllPages<DemoTransactionRow>(async (start, end) => await client.from("transactions")
+        .select("id,account_id,recipient_name,recipient_upi,amount,transaction_type,recipient_type,transaction_time,status,reference_number", { count: "exact" })
         .in("account_id", accountIds)
         .order("transaction_time", { ascending: false })
-      : Promise.resolve({ data: [], error: null }),
+        .order("id", { ascending: true })
+        .range(start, end))
+      : Promise.resolve([]),
     client.from("security_alerts")
       .select("id,transaction_id,alert_type,severity,title,message,recommendation,status,created_at,resolved_at")
       .eq("user_id", user.id)
@@ -300,7 +304,6 @@ async function loadDatabase(): Promise<DemoDatabase> {
       .eq("user_id", user.id)
       .order("checked_at", { ascending: false }),
   ]);
-  throwOnDatabaseError(transactionsResult.error, "Unable to load demo transactions");
   throwOnDatabaseError(alertsResult.error, "Unable to load security alerts");
   throwOnDatabaseError(activitiesResult.error, "Unable to load security activity");
   throwOnDatabaseError(scoresResult.error, "Unable to load security scores");
@@ -308,15 +311,23 @@ async function loadDatabase(): Promise<DemoDatabase> {
   throwOnDatabaseError(passwordsResult.error, "Unable to load password-check history");
   throwOnDatabaseError(phishingResult.error, "Unable to load phishing-check history");
 
-  const transactions = transactionsResult.data ?? [];
+  assertUniqueRows(transactions, transaction => transaction.id);
   const transactionIds = transactions.map(transaction => transaction.id as string);
-  const risksResult = transactionIds.length
-    ? await client.from("transaction_risk")
-      .select("id,transaction_id,risk_score,risk_level,amount_risk,behaviour_risk,recipient_risk,frequency_risk,decision,explanation,analysed_at")
-      .in("transaction_id", transactionIds)
-    : { data: [], error: null };
-  throwOnDatabaseError(risksResult.error, "Unable to load transaction risk assessments");
-  const risks = new Map((risksResult.data ?? []).map(risk => [risk.transaction_id as string, risk]));
+  const riskPages = await Promise.all(
+    Array.from({ length: Math.ceil(transactionIds.length / 500) }, (_, index) =>
+      fetchAllPages<DemoTransactionRiskRecord>(async (start, end) => await client.from("transaction_risk")
+        .select("id,transaction_id,risk_score,risk_level,amount_risk,behaviour_risk,recipient_risk,frequency_risk,decision,explanation,analysed_at", { count: "exact" })
+        .in("transaction_id", transactionIds.slice(index * 500, (index + 1) * 500))
+        .order("analysed_at", { ascending: false })
+        .order("id", { ascending: true })
+        .range(start, end)),
+    ),
+  );
+  const risks = new Map<string, DemoTransactionRiskRecord>();
+  for (const risk of riskPages.flat()) {
+    const transactionId = risk.transaction_id as string;
+    if (!risks.has(transactionId)) risks.set(transactionId, risk as DemoTransactionRiskRecord);
+  }
 
   return {
     user,
@@ -326,6 +337,7 @@ async function loadDatabase(): Promise<DemoDatabase> {
       amount: Number(transaction.amount),
       risk: (risks.get(transaction.id) ?? null) as DemoTransactionRiskRecord | null,
     })) as DemoTransactionRecord[],
+    transactionHistoryComplete: true,
     alerts: (alertsResult.data ?? []) as DemoAlertRecord[],
     activity: (activitiesResult.data ?? []) as DemoActivityRecord[],
     securityScores: (scoresResult.data ?? []) as DemoSecurityScoreRecord[],

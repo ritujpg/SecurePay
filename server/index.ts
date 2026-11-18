@@ -34,5 +34,18 @@ export function createServer({
 
   app.get("/api/demo", handleDemo);
 
+  app.use((error: unknown, _req, res, next) => {
+    if (
+      typeof error === "object" &&
+      error !== null &&
+      "type" in error &&
+      error.type === "entity.parse.failed"
+    ) {
+      res.status(400).json({ error: "Malformed JSON request body" });
+      return;
+    }
+    next(error);
+  });
+
   return app;
 }

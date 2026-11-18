@@ -11,19 +11,70 @@ describe("ML API client", () => {
       new Response(JSON.stringify({
         model: "Random Forest",
         prediction: 1,
-        result: "Fraudulent",
+        assessment: "elevated",
+        model_score: 0.9449,
+        score_type: "uncalibrated_model_score",
+        decision_threshold: 0.7275,
       }), { status: 200 }),
     );
     vi.stubGlobal("fetch", fetchMock);
 
-    await expect(predictRandomForest({ amount: 25, step: 3 })).resolves.toMatchObject({
+    await expect(predictRandomForest({
+      log_amount: 3.2,
+      log_sender_history_count: 0,
+      log_beneficiary_history_count: 0,
+      type_CASH_IN: 0,
+      type_CASH_OUT: 0,
+      type_DEBIT: 0,
+      type_PAYMENT: 0,
+      type_TRANSFER: 1,
+    })).resolves.toMatchObject({
       prediction: 1,
-      result: "Fraudulent",
+      assessment: "elevated",
+      model_score: 0.9449,
+      score_type: "uncalibrated_model_score",
+      decision_threshold: 0.7275,
     });
+
     expect(fetchMock).toHaveBeenCalledWith("/api/ml/predict", expect.objectContaining({
       method: "POST",
-      body: JSON.stringify({ amount: 25, step: 3 }),
+      body: JSON.stringify({
+        log_amount: 3.2,
+        log_sender_history_count: 0,
+        log_beneficiary_history_count: 0,
+        type_CASH_IN: 0,
+        type_CASH_OUT: 0,
+        type_DEBIT: 0,
+        type_PAYMENT: 0,
+        type_TRANSFER: 1,
+      }),
     }));
+  });
+
+  it("rejects a response that labels an uncalibrated score as a fraud probability", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({
+        model: "Random Forest",
+        prediction: 1,
+        result: "Fraudulent",
+        fraud_probability: 99,
+        decision_threshold: 70,
+      }), { status: 200 }),
+    ));
+
+    await expect(predictRandomForest({
+      log_amount: 1,
+      log_sender_history_count: 0,
+      log_beneficiary_history_count: 0,
+      type_CASH_IN: 0,
+      type_CASH_OUT: 0,
+      type_DEBIT: 0,
+      type_PAYMENT: 0,
+      type_TRANSFER: 1,
+    })).rejects.toMatchObject({
+      name: "MlApiError",
+      message: "The ML service response did not match the expected format",
+    });
   });
 
   it("sends text using the Flask message request shape", async () => {
@@ -105,11 +156,45 @@ describe("ML API client", () => {
       new Response(JSON.stringify({ error: "Missing features", features: ["amount"] }), { status: 400 }),
     ));
 
-    await expect(predictRandomForest({ step: 1 })).rejects.toMatchObject({
+    await expect(predictRandomForest({
+      log_amount: 1,
+      log_sender_history_count: 0,
+      log_beneficiary_history_count: 0,
+      type_CASH_IN: 0,
+      type_CASH_OUT: 0,
+      type_DEBIT: 0,
+      type_PAYMENT: 0,
+      type_TRANSFER: 1,
+    })).rejects.toMatchObject({
       name: "MlApiError",
       status: 400,
       message: "Missing features",
     });
+  });
+
+  it("rejects non-finite or extra payment feature inputs before making a request", () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const validFeatures = {
+      log_amount: 1,
+      log_sender_history_count: 0,
+      log_beneficiary_history_count: 0,
+      type_CASH_IN: 0,
+      type_CASH_OUT: 0,
+      type_DEBIT: 0,
+      type_PAYMENT: 0,
+      type_TRANSFER: 1,
+    };
+
+    expect(() => predictRandomForest({
+      ...validFeatures,
+      log_amount: Number.POSITIVE_INFINITY,
+    })).toThrow(MlApiError);
+    expect(() => predictRandomForest({
+      ...validFeatures,
+      unknown: 1,
+    } as typeof validFeatures)).toThrow(MlApiError);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("rejects empty SMS and phishing message input before making a request", async () => {

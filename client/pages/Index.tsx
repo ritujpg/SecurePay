@@ -5,6 +5,10 @@ import CyberTrustScore from "../components/CyberTrustScore";
 import PhishingCheck from "../components/PhishingCheck";
 import PasswordStrengthChecker from "../components/PasswordStrengthChecker";
 import NotFound from "./NotFound";
+import { buildPaymentFraudFeatures } from "../lib/fraud-features";
+import { canRunPaymentMl, getPaymentMlStatusMessage } from "../lib/payment-ml-status";
+import { validateDemoPaymentAmount } from "../lib/payment-validation";
+import { predictRandomForest, type RandomForestPrediction } from "../lib/ml-api";
 import {
   createDemoTransaction,
   fetchDemoDatabase,
@@ -36,7 +40,8 @@ type Transaction = { id: string; sender: string; receiver: string; receiverUpi: 
 type SecurityEvent = { id: string; type: string; description: string; riskScore: number; timestamp: string; transactionId?: string };
 type Notice = { id: string; type: string; title: string; message: string; timestamp: string; read: boolean; severity?: "Low" | "Medium" | "High" | "Critical"; transactionId?: string };
 type Draft = { recipient: Recipient; amount: number; note: string; type: "sent" | "request"; idempotencyKey?: string; signals?: { newDevice?: boolean; unusualLocation?: boolean; timeOverride?: number; recentCount?: number } };
-type AppData = { user: User; auth: { isAuthenticated: boolean; knownMobiles: string[]; lastMobile: string }; loginMobile: string; balance: number; transactions: Transaction[]; recipients: Recipient[]; notifications: Notice[]; events: SecurityEvent[]; language: Language; darkMode: boolean; settings: { notifications: boolean; security: boolean; biometric: boolean; transactionAlerts: boolean }; draft: Draft | null; risk: { score: number; level: RiskLevel; factors: Factor[]; verification: string[] } | null; pinFailures: number; lockedUntil: number; introDone: boolean };
+type RiskAssessment = { score: number; level: RiskLevel; factors: Factor[]; verification: string[]; mlStatus?: "checking" | "ready" | "unavailable" | "insufficient-history"; mlAssessment?: RandomForestPrediction };
+type AppData = { user: User; auth: { isAuthenticated: boolean; knownMobiles: string[]; lastMobile: string }; loginMobile: string; balance: number; transactions: Transaction[]; recipients: Recipient[]; notifications: Notice[]; events: SecurityEvent[]; language: Language; darkMode: boolean; settings: { notifications: boolean; security: boolean; biometric: boolean; transactionAlerts: boolean }; draft: Draft | null; risk: RiskAssessment | null; pinFailures: number; lockedUntil: number; introDone: boolean };
 
 const STORE_KEY = "securepay-demo-v1";
 const protectedRoutePatterns = [
@@ -314,7 +319,7 @@ function SecurePay() {
       return null;
     }
   };
-  const beginDraft = (draft: Draft) => { const transactionDraft = { ...draft, idempotencyKey: draft.idempotencyKey ?? crypto.randomUUID() }; const risk = calcRisk(transactionDraft, data); if (!data.settings.biometric) risk.verification = risk.verification.filter(step => step !== "Biometric"); const now = new Date().toISOString(); setData(v => ({ ...v, draft: transactionDraft, risk, events: [{ id: `e${Date.now() + 1}`, type: "Risk analysis completed", description: `Risk score ${risk.score} · ${risk.level} risk.`, riskScore: risk.score, timestamp: now }, { id: `e${Date.now()}`, type: "Payment initiated", description: `${money(transactionDraft.amount)} to ${transactionDraft.recipient.name}.`, riskScore: 0, timestamp: now }, ...v.events] })); navigate("/risk"); };
+  const beginDraft = (draft: Draft) => { const transactionDraft = { ...draft, idempotencyKey: draft.idempotencyKey ?? crypto.randomUUID() }; const risk: RiskAssessment = { ...calcRisk(transactionDraft, data), ...(transactionDraft.type === "sent" ? { mlStatus: "checking" } : {}) }; if (!data.settings.biometric) risk.verification = risk.verification.filter(step => step !== "Biometric"); const now = new Date().toISOString(); setData(v => ({ ...v, draft: transactionDraft, risk, events: [{ id: `e${Date.now() + 1}`, type: "Risk analysis completed", description: `Risk score ${risk.score} · ${risk.level} risk.`, riskScore: risk.score, timestamp: now }, { id: `e${Date.now()}`, type: "Payment initiated", description: `${money(transactionDraft.amount)} to ${transactionDraft.recipient.name}.`, riskScore: 0, timestamp: now }, ...v.events] })); navigate("/risk"); };
   const continueVerification = () => { if (!data.risk || !data.draft) return; if (data.risk.level === "CRITICAL") event("Critical transaction held", `${money(data.draft.amount)} to ${data.draft.recipient.name} requires a security review.`, data.risk.score); navigate("/pin"); };
   const completeTransaction = async (completed: string[], requiredOverride?: string[]) => {
     if (!data.draft || !data.risk) return;
@@ -555,7 +560,7 @@ function AmountPage() {
   useEffect(() => { if (passed) update({ draft: { recipient: passed, amount: 0, note: "", type: "sent" }, risk: null }); }, [passed?.id]);
   useEffect(() => { setAmount(draft?.amount ? String(draft.amount) : ""); setNote(draft?.note ?? ""); setError(""); }, [draft?.recipient.id]);
   if (!recipient) return <div className="narrow-page"><PageHeading back title={t("chooseRecipient")} /><Button onClick={() => navigate("/send")}>Choose a recipient</Button></div>;
-  const submit = () => { const value = Number(amount); if (!Number.isFinite(value) || value <= 0) { setError(t("enterAmountError")); return; } const current = data.draft ?? { recipient, amount: 0, note: "", type: "sent" as const }; if (current.type === "sent" && value > data.balance) { setError(t("outsideBalance")); return; } update({ draft: { ...current, recipient, amount: value, note }, risk: null }); navigate(current.type === "request" ? "/request/review" : "/review"); };
+  const submit = () => { const value = Number(amount); const current = data.draft ?? { recipient, amount: 0, note: "", type: "sent" as const }; const validationError = validateDemoPaymentAmount(value, data.balance); if (validationError === "invalid") { setError(t("enterAmountError")); return; } if (validationError === "too-large") { setError("Amount must not exceed ₹1,000,000."); return; } if (validationError === "outside-balance" && current.type === "sent") { setError(t("outsideBalance")); return; } update({ draft: { ...current, recipient, amount: value, note }, risk: null }); navigate(current.type === "request" ? "/request/review" : "/review"); };
   return <div className="narrow-page"><PageHeading back title={t("amount")} subtitle={data.draft?.type === "request" ? "Request a specific amount." : "How much would you like to send?"} /><div className="amount-recipient"><Avatar name={recipient.name} /><div><b>{recipient.name}</b><small>{recipient.upiId}</small></div><BadgeCheck size={16} className={recipient.trusted ? "verified-icon" : "muted-icon"} /></div>
     <div className="amount-entry"><span>₹</span><input aria-label="Amount" inputMode="decimal" value={amount} onChange={e => { setAmount(e.target.value.replace(/[^0-9.]/g, "")); setError(""); }} placeholder="0" autoFocus /><small>{data.user.bankAccount}</small></div>
     <div className="amount-chips">{[100, 500, 1000, 2000, 5000].map(x => <button key={x} onClick={() => { setAmount(String(x)); setError(""); }}>₹{x.toLocaleString("en-IN")}</button>)}</div>
@@ -571,13 +576,50 @@ function ReviewPage() {
   return <div className="narrow-page"><PageHeading back title={request ? "Review request" : t("review")} subtitle="Double-check the details before continuing." /><div className="review-card"><div className="review-person"><Avatar name={draft.recipient.name} tone="mint" /><div><small>{request ? "Request from" : t("sendTo")}</small><b>{draft.recipient.name}</b><span>{draft.recipient.upiId}</span></div><BadgeCheck className={draft.recipient.trusted ? "verified-icon" : "muted-icon"} size={18} /></div><div className="review-amount"><small>{t("amount")}</small><strong>{money(draft.amount)}</strong></div>{draft.note && <div className="review-line"><span>Note</span><b>{draft.note}</b></div>}<div className="review-line"><span>{request ? "Request to" : "Paying from"}</span><b>{request ? data.user.name : data.user.bankAccount}</b></div>{!request && <div className="review-line"><span>Available after payment</span><b>••••••</b></div>}</div><div className="risk-precheck"><ShieldCheck size={19} /><div><b>Risk-adaptive protection</b><small>SecurePay will assess this {request ? "request" : "payment"} before it proceeds.</small></div></div><Button onClick={proceed} className="full-button">{request ? "Continue securely" : t("proceed")}<ArrowRight size={17} /></Button><p className="inline-demo-note"><LockKeyhole size={14} /> This is a simulated demo flow.</p></div>;
 }
 function RiskPage() {
-  const { data, t, continueVerification, navigate, blockTransaction } = useApp(); const [analyzing, setAnalyzing] = useState(true); const [expanded, setExpanded] = useState(false);
+  const { data, database, databaseStatus, t, continueVerification, navigate, blockTransaction, update } = useApp(); const [analyzing, setAnalyzing] = useState(true); const [expanded, setExpanded] = useState(false);
   useEffect(() => { const id = setTimeout(() => setAnalyzing(false), 1050); return () => clearTimeout(id); }, []);
+  useEffect(() => {
+    const draft = data.draft;
+    const risk = data.risk;
+    if (!draft || draft.type !== "sent" || !risk || risk.mlStatus !== "checking") return;
+    if (databaseStatus === "loading") return;
+    if (!canRunPaymentMl(databaseStatus, database?.transactionHistoryComplete ?? false)) {
+      update({ risk: { ...risk, mlStatus: "insufficient-history" } });
+      return;
+    }
+    let active = true;
+    const paymentType = draft.recipient.upiId.endsWith("@billpay")
+      ? "Bill Payment"
+      : draft.recipient.name.toLowerCase().includes("recharge")
+        ? "Recharge"
+        : "UPI";
+    let features: ReturnType<typeof buildPaymentFraudFeatures>;
+    try {
+      features = buildPaymentFraudFeatures({
+        amount: draft.amount,
+        recipientUpi: draft.recipient.upiId,
+        paymentType,
+        at: new Date(),
+        transactions: data.transactions,
+        historyComplete: database.transactionHistoryComplete,
+      });
+    } catch {
+      update({ risk: { ...risk, mlStatus: "insufficient-history" } });
+      return;
+    }
+    void predictRandomForest(features).then(mlAssessment => {
+      if (active) update({ risk: { ...risk, mlStatus: "ready", mlAssessment } });
+    }).catch(() => {
+      if (active) update({ risk: { ...risk, mlStatus: "unavailable" } });
+    });
+    return () => { active = false; };
+  }, [data.draft?.idempotencyKey, data.risk?.mlStatus, databaseStatus, database?.transactionHistoryComplete]);
   if (!data.risk || !data.draft) return <div className="narrow-page"><PageHeading title={t("risk")} /><Button onClick={() => navigate("/send")}>Start a payment</Button></div>;
   const { score, level, factors, verification } = data.risk; const critical = level === "CRITICAL";
   const levelClass = level.toLowerCase(); const lead = factors[0]?.label ?? "No unusual transaction signals found.";
   return <div className="narrow-page risk-page"><div className="analysis-top"><div className={`scan-emblem ${analyzing ? "scanning" : ""}`}><ShieldCheck size={30} /></div><span className="eyebrow">SECUREPAY PROTECTION</span><h1>{analyzing ? "Securing your payment..." : "Security analysis complete"}</h1><p>{analyzing ? "Checking this payment against your usual activity." : "Your payment was assessed by the local demo risk engine."}</p></div>
     <div className={`risk-result-card ${levelClass}`}><div className="risk-score-area"><div className={`risk-gauge ${levelClass}`}><strong>{score}</strong><small>/100</small></div><div><small>SECURITY RISK SCORE</small><h2>{riskName(level, t)}</h2><p>{critical ? "Multiple unusual signals detected" : lead + "."}</p></div></div><div className="risk-meter"><span style={{ width: `${score}%` }} /></div><button className="risk-factors-toggle" onClick={() => setExpanded(!expanded)}><span>{t("whyRisk")}</span>{expanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}</button>{expanded && <div className="factor-list">{factors.length ? factors.map((f, i) => <div key={i}><span>{translateRiskFactor(f.label, data.language)}</span><b>+{f.points}</b></div>) : <div><span>No risk factors found</span><b>+0</b></div>}</div>}</div>
+    {data.draft.type === "sent" && <div className="risk-precheck" role="status" aria-live="polite"><ShieldCheck size={19} /><div><b>Experimental PaySim risk assessment</b><small>{getPaymentMlStatusMessage(data.risk.mlStatus, data.risk.mlAssessment)}</small><small>Trained on synthetic PaySim data. Advisory only; it does not authorize, block, or verify a real bank payment. History features count prior attempts in earlier hourly buckets; PaySim and SecurePay hour boundaries cannot be aligned exactly.</small></div></div>}
     {critical ? <div className="critical-warning"><ShieldAlert size={20} /><div><b>{t("riskCriticalTitle")}</b><p>{t("riskCriticalBody")}</p></div></div> : <div className="verification-required"><b>{t("riskRequired")}</b><div>{verification.map((v: string, i: number) => <span key={v}><i>{i + 1}</i>{v}{i < verification.length - 1 && <b className="verify-plus">+</b>}</span>)}</div></div>}
     <Button disabled={analyzing} className="full-button" onClick={continueVerification}>{critical ? t("verifyReview") : t("verify")}<ArrowRight size={17} /></Button>{critical && <Button variant="outline" className="full-button secondary-cta" onClick={() => data.draft && data.risk ? blockTransaction() : navigate("/")}>{t("cancelTransaction")}</Button>}
     <button className="text-button" onClick={() => navigate(-1)}><ArrowLeft size={15} />Back to payment</button></div>;
